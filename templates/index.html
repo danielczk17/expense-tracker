@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Expense Tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+
+<header>
+  <h1><button onclick="switchTab('dashboard')" style="background:none;border:none;color:inherit;font:inherit;cursor:pointer;padding:0;letter-spacing:inherit">&#x1F4B3; Expense Tracker</button></h1>
+  <div class="header-right">
+    <div class="month-nav">
+      <button class="month-nav-btn" onclick="shiftMonth(-1)">&#8249;</button>
+      <input type="month" id="month-picker" class="month-input" onchange="setMonth(this.value)" />
+      <button class="month-nav-btn" onclick="shiftMonth(1)">&#8250;</button>
+    </div>
+    <div class="spinner" id="spinner"></div>
+    <div class="menu-wrap">
+      <button class="menu-btn" onclick="toggleMenu(event)">Menu <span style="font-size:.6em;vertical-align:middle">&#9660;</span></button>
+      <div class="menu-dropdown" id="app-menu">
+        <button class="menu-item" onclick="closeMenu();switchTab('data')">
+          <span class="menu-item-icon">&#128196;</span> Data
+        </button>
+        <button class="menu-item" onclick="closeMenu();switchTab('settings')">
+          <span class="menu-item-icon">&#9881;</span> Settings
+        </button>
+      </div>
+      <input type="file" id="import-file-input" accept=".csv" style="display:none" onchange="importFromCSV(this)">
+    </div>
+  </div>
+</header>
+
+<div class="container">
+
+  <!-- ── Summary strip ── -->
+  <div class="summary-strip">
+    <div class="summary-card">
+      <div class="lbl">This Month</div>
+      <div class="val" id="s-total">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">Budget Used</div>
+      <div class="val neutral" id="s-budget-used">—</div>
+      <div class="sub" id="s-budget-sub">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">Expenses</div>
+      <div class="val" id="s-count">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">Top Category</div>
+      <div class="val" id="s-top-cat" style="font-size:1.1rem">—</div>
+      <div class="sub" id="s-top-cat-amt">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="lbl">YTD Total</div>
+      <div class="val" id="s-ytd">—</div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+    <button class="tab-btn" data-tab="expenses" onclick="switchTab('expenses')">Expenses</button>
+    <button class="tab-btn" data-tab="budget" onclick="switchTab('budget')">Budget</button>
+  </div>
+
+  <!-- ── Dashboard tab ── -->
+  <div id="tab-dashboard">
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Spending by Category</span>
+        <span id="cat-chart-month" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
+      </div>
+      <div id="cat-chart-empty" class="empty">No expenses recorded for this month.</div>
+      <div id="cat-chart-area" style="display:none;padding:1.25rem 1.5rem 1.5rem">
+        <div style="display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;justify-content:center">
+          <div style="position:relative;width:200px;height:200px;flex-shrink:0">
+            <canvas id="cat-canvas" width="200" height="200" style="display:block"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
+              <div id="donut-label-val" style="font-size:.95rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
+              <div id="donut-label-sub" style="font-size:.65rem;color:var(--text-muted);margin-top:.15rem">total</div>
+            </div>
+          </div>
+          <div id="cat-legend" style="display:flex;flex-direction:column;gap:.55rem;min-width:220px;max-width:320px;flex:1"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Monthly Trend</span>
+      </div>
+      <div id="trend-empty" class="empty">No expense history yet — add your first expense to get started.</div>
+      <div id="trend-chart-area" style="display:none;padding:1rem 1.25rem 1.25rem">
+        <canvas id="trend-canvas" style="width:100%;height:200px;display:block"></canvas>
+      </div>
+    </div>
+
+  </div><!-- end #tab-dashboard -->
+
+  <!-- ── Expenses tab ── -->
+  <div id="tab-expenses" style="display:none">
+
+    <div class="card" id="expense-card">
+      <div class="card-header">
+        <span class="card-title">Expense Log</span>
+        <div style="display:flex;align-items:center;gap:.6rem;margin-left:auto">
+          <span id="exp-sel-count" style="font-size:.75rem;color:#64748b"></span>
+          <button class="btn btn-edit" id="exp-edit-btn" onclick="startEdit()" disabled>Edit</button>
+          <button class="btn btn-del"  id="exp-delete-btn" onclick="deleteSelected()" disabled>Delete</button>
+          <button class="btn-toggle" id="exp-log-btn" onclick="toggleExpenseLog()">
+            <span id="exp-log-icon">&#x25BC;</span>
+            <span id="exp-log-lbl">Hide</span>
+          </button>
+        </div>
+      </div>
+      <div class="collapsible open" id="exp-log-body">
+        <div class="form-row expense-form-row" style="border-bottom:none">
+          <div class="fg">
+            <label for="f-date">Date</label>
+            <input id="f-date" type="date" />
+          </div>
+          <div class="fg">
+            <label for="f-category">Category</label>
+            <select id="f-category"></select>
+          </div>
+          <div class="fg">
+            <label for="f-amount">Amount (S$)</label>
+            <input id="f-amount" type="number" placeholder="0.00" min="0.01" step="0.01" />
+          </div>
+          <div class="fg">
+            <label for="f-desc">Description</label>
+            <input id="f-desc" type="text" placeholder="Optional notes…" />
+          </div>
+          <div style="display:flex;flex-direction:column;gap:.4rem;justify-content:flex-end">
+            <button class="btn btn-primary" id="submit-btn" onclick="submitExpense()">Add</button>
+            <button class="btn btn-ghost" id="cancel-btn" onclick="cancelEdit()" style="display:none;font-size:.78rem;padding:.35rem .6rem">Cancel</button>
+          </div>
+        </div>
+        <div class="table-wrap" id="exp-wrap">
+          <div class="empty">No expenses for this month.</div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end #tab-expenses -->
+
+  <!-- ── Budget tab ── -->
+  <div id="tab-budget" style="display:none">
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Monthly Budgets</span>
+        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">Limits apply per calendar month</span>
+      </div>
+      <div style="padding:1rem 1.5rem 1.5rem">
+        <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:1.1rem">Set a monthly spending limit per category. Leave blank or enter 0 to remove the limit.</p>
+        <div id="budget-grid"></div>
+        <div style="margin-top:1.25rem;display:flex;gap:.75rem;align-items:center">
+          <button class="btn btn-primary" onclick="saveAllBudgets()">Save Budgets</button>
+          <span id="budget-status" style="font-size:.82rem;color:#16a34a;display:none">Saved.</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end #tab-budget -->
+
+  <!-- ── Settings tab ── -->
+  <div id="tab-settings" style="display:none">
+    <div class="card" style="max-width:480px">
+      <div class="card-header"><span class="card-title">Settings</span></div>
+      <div style="padding:1.25rem 1.5rem">
+        <div class="theme-toggle-wrap">
+          <span class="theme-toggle-label">Dark Mode</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="dark-mode-toggle" onchange="toggleDarkMode(this.checked)">
+            <span class="toggle-track"></span>
+            <span class="toggle-thumb"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div><!-- end #tab-settings -->
+
+  <!-- ── Data tab ── -->
+  <div id="tab-data" style="display:none">
+    <div class="card" style="max-width:680px">
+      <div class="card-header"><span class="card-title">Data Management</span></div>
+      <div style="display:flex;flex-direction:column;gap:1.25rem;padding:.25rem 0">
+
+        <div class="data-item">
+          <span style="font-size:1.5rem;line-height:1">&#11015;</span>
+          <div style="flex:1">
+            <div class="data-item-title">Export to CSV</div>
+            <div class="data-item-desc">Download all your expense records as a CSV file for backup or analysis in Excel / Google Sheets.</div>
+            <button class="btn btn-primary" onclick="doExport()">Export CSV</button>
+          </div>
+        </div>
+
+        <div class="data-item">
+          <span style="font-size:1.5rem;line-height:1">&#11014;</span>
+          <div style="flex:1">
+            <div class="data-item-title">Import from CSV</div>
+            <div class="data-item-desc">Upload a CSV with columns: <strong>Date</strong> (YYYY-MM-DD), <strong>Amount</strong>, <strong>Category</strong>, <strong>Description</strong>. Existing records are not affected.</div>
+            <button class="btn btn-primary" onclick="document.getElementById('import-file-input').click()">Choose File &amp; Import</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div><!-- end #tab-data -->
+
+</div><!-- end .container -->
+
+<div class="toast" id="toast"></div>
+
+<!-- ── Confirm dialog ── -->
+<div id="confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center">
+  <div style="background:var(--bg-card);border-radius:.6rem;padding:1.5rem 1.75rem;max-width:360px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <p id="confirm-msg" style="margin:0 0 1.25rem;font-size:.92rem;color:var(--text);line-height:1.5"></p>
+    <div style="display:flex;gap:.75rem;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="resolveConfirm(false)">Cancel</button>
+      <button class="btn" onclick="resolveConfirm(true)" style="background:#ef4444;border:1px solid #ef4444;color:#fff">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

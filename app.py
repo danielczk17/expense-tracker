@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import os
 import re
 import sqlite3
@@ -7,6 +8,13 @@ import threading
 import uuid
 from datetime import datetime
 from flask import Flask, jsonify, request, render_template, send_file
+
+# Load .env so GEMINI_API_KEY can be set there instead of system environment
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 PORT = int(os.environ.get("PORT", 5001))
 
@@ -20,7 +28,7 @@ _write_lock = threading.Lock()
 
 DEFAULT_CATEGORIES = [
     "Food & Dining", "Transport", "Shopping", "Entertainment",
-    "Health", "Utilities", "Housing", "Education", "Travel", "Other",
+    "Health", "Fitness", "Utilities", "Housing", "Education", "Travel", "Subscriptions", "Other",
 ]
 
 
@@ -72,6 +80,8 @@ _SKIP_PHRASES = [
     'previous balance','opening balance','closing balance',
     'credit limit','available credit','finance charge',
     'late charge','late payment fee','annual fee',
+    'bill payment','giro payment','inter-bank transfer',
+    'fund transfer','paynow','fast payment','bill pay',
     'interest charge','gst charged','brought forward',
     'carried forward','total amount due','amount due',
     'statement date','account number',
@@ -112,6 +122,13 @@ _CATEGORY_KEYWORDS = {
         'coldstorage','supermarket','grocery','don don donki',
         'redmart','prime supermarket','7-eleven','7eleven','cheers',
         'amazon fresh','marketplace by',
+        # Local misc
+        'chagee','twyst','kopi','tze char','zi char','cai png',
+        'texas chicken','popeye','nando','mos food',
+        'tori-q','tori q','wok','ding dong','maki-san','stuff\'d',
+        'collin\'s','astons','bornga','korean bbq','japanese cuisine',
+        # Generic food terms — catches "FOOD DYNASTY", "GOLDEN WOK", etc.
+        'food','eatery','diner','grill','brasserie',
         # Others
         'noodle','bbq','steamboat','hot pot','dim sum','mala hotpot',
         'economy rice','chicken rice','mixed rice','laksa','wanton',
@@ -123,7 +140,7 @@ _CATEGORY_KEYWORDS = {
         'prime taxi','premier taxi','silver cab','london cab',
         'limousine','maxi cab','maxicab',
         'smrt','sbs transit','go-ahead','tower transit',
-        'ez-link','nets flash','concession',
+        'bus/mrt','bus','mrt','lrt','ez-link','nets flash','concession',
         'parking','carpark','car park','wilson parking',
         'esso','shell','caltex','sinopec','spc','petron',
         'petrol','diesel','fuel','erp',
@@ -156,10 +173,6 @@ _CATEGORY_KEYWORDS = {
         'mustafa',
     ],
     'Entertainment': [
-        # Streaming
-        'netflix','spotify','apple.com','apple tv','disney+','disneyplus',
-        'hbo','amazon prime','youtube premium','crunchyroll','viu',
-        'iflix','tidal',
         # Gaming
         'steam','playstation','xbox','nintendo','garena','razer gold',
         'google play','app store','roblox','riot games','epic games',
@@ -171,9 +184,19 @@ _CATEGORY_KEYWORDS = {
         'klook','kkday','universal studio','sentosa','zoo','bird park',
         'aquarium','science centre','sports hub',
         'bowling','arcade','karaoke','escape room','trampoline',
-        # Software subscriptions
+    ],
+    'Subscriptions': [
+        # Streaming
+        'netflix','spotify','disney+','disneyplus','hbo','amazon prime',
+        'youtube premium','crunchyroll','viu','iflix','tidal','apple tv',
+        'apple music','deezer','paramount',
+        # Software / Cloud
         'canva','figma','dropbox','icloud','google one','onedrive',
         'notion','zoom','microsoft 365','office 365','adobe',
+        'github','jetbrains','1password','lastpass','dashlane',
+        'grammarly','chatgpt','claude','openai',
+        # Memberships
+        'membership','subscription','annual fee','renewal',
     ],
     'Health': [
         # Hospitals
@@ -191,11 +214,22 @@ _CATEGORY_KEYWORDS = {
         'unity pharmacy','guardian pharmacy','watsons health','pharmacy',
         # Allied health
         'physiotherapy','physio','chiropractor','tcm','acupuncture',
-        # Fitness
-        'gym','fitness','yoga','pilates','anytime fitness','pure fitness',
-        'virgin active','fitness first','f45',
         # Optical
         'eyewear','optical','owndays','nanyang optical','spectacle hut',
+    ],
+    'Fitness': [
+        # Gyms
+        'gym','anytime fitness','pure fitness','virgin active','fitness first',
+        'f45','barry\'s','crossfit','snap fitness','true fitness','planet fitness',
+        # Classes / Studios
+        'yoga','pilates','barre','spinning','cycling studio','muay thai',
+        'bjj','boxing','martial arts','kickboxing','jiu jitsu',
+        'dance studio','swim class','personal trainer',
+        # Sports
+        'badminton','tennis','squash','golf','bowling alley','sports complex',
+        'activesg','safra','onepapa','hometeamns',
+        # Nutrition
+        'whey','protein','myprotein','gnc','supplement',
     ],
     'Utilities': [
         'singapore power','sp group','sp services','city gas',
@@ -225,14 +259,16 @@ _CATEGORY_KEYWORDS = {
         'british council','ielts','toefl','pearson vue',
     ],
     'Travel': [
+        # Overseas spending (Amaze card routes foreign currency charges here)
+        'amaze',
         # Airlines
         'singapore airlines','sia ','scoot','jetstar','air asia',
         'cathay pacific','emirates','qatar airways','british airways',
         'lufthansa','klm','thai airways','malaysia airlines',
         'batik air','lion air','vietjet','indigo air',
         # Booking
-        'booking.com','agoda','airbnb','expedia','trip.com',
-        'hotels.com','traveloka','ctrip',
+        'booking.com','agoda','airbnb','expedia','trip.com','trip com',
+        'hotels.com','traveloka','ctrip','skyscanner','kayak',
         # Hotels
         'marriott','hilton','hyatt','sheraton','westin',
         'intercontinental','holiday inn','crowne plaza',
@@ -246,23 +282,113 @@ _CATEGORY_KEYWORDS = {
 }
 
 
+# Pre-compile keyword patterns with word boundaries to prevent false matches
+# e.g. 'gap' must not match 'singapore'
+_CATEGORY_PATTERNS = {
+    cat: [re.compile(r'\b' + re.escape(kw.strip()) + r'\b') for kw in kws]
+    for cat, kws in _CATEGORY_KEYWORDS.items()
+}
+
 def _guess_category(description: str) -> str:
     d = description.lower()
-    for cat, keywords in _CATEGORY_KEYWORDS.items():
-        for kw in keywords:
-            if kw in d:
+    for cat, patterns in _CATEGORY_PATTERNS.items():
+        for pat in patterns:
+            if pat.search(d):
                 return cat
     return 'Other'
 
 
+def _ai_categorize_batch(descriptions: list) -> list:
+    """Call Gemini to categorize a batch of descriptions that keywords couldn't classify.
+    Returns a list of category strings in the same order as the input."""
+    api_key = os.environ.get('GEMINI_API_KEY')
+    if not api_key or not descriptions:
+        return ['Other'] * len(descriptions)
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        prompt = (
+            "You are categorizing Singapore credit card transactions.\n\n"
+            f"Categories (pick exactly one per transaction): {', '.join(DEFAULT_CATEGORIES)}\n\n"
+            "Rules:\n"
+            "- BUS/MRT, Grab, taxi, ERP, petrol → Transport\n"
+            "- Restaurants, cafes, food courts, grocery, delivery → Food & Dining\n"
+            "- Flights, hotels, booking platforms → Travel\n"
+            "- Games, cinemas, attractions → Entertainment\n"
+            "- Netflix, Spotify, Adobe, iCloud, SaaS, memberships → Subscriptions\n"
+            "- Hospitals, clinics, pharmacy, dental, physiotherapy → Health\n"
+            "- Gym, yoga, pilates, sports, protein supplements → Fitness\n"
+            "- Telco, electricity, gas, internet → Utilities\n"
+            "- Online shopping, retail, department stores → Shopping\n"
+            "- School fees, courses, tuition → Education\n"
+            "- Rent, condo, renovation → Housing\n"
+            "- Anything unclear → Other\n\n"
+            "Transaction descriptions (one per line):\n"
+            + "\n".join(f"{i+1}. {d}" for i, d in enumerate(descriptions))
+            + "\n\nRespond with a JSON array of category strings only, "
+            "same count and order as the input. Example: [\"Transport\", \"Food & Dining\"]"
+        )
+        response = client.models.generate_content(
+            model='gemini-3.5-flash-lite',
+            contents=prompt,
+        )
+        text = response.text.strip()
+        # Strip markdown code fences if present
+        if text.startswith('```'):
+            text = re.sub(r'^```[^\n]*\n', '', text)
+            text = re.sub(r'\n```$', '', text.strip())
+        result = json.loads(text)
+        if not isinstance(result, list) or len(result) != len(descriptions):
+            return ['Other'] * len(descriptions)
+        return [r if r in DEFAULT_CATEGORIES else 'Other' for r in result]
+    except Exception as e:
+        app.logger.warning(f"Gemini categorization failed: {e}")
+        return ['Other'] * len(descriptions)
+
+
+def _detect_statement_year(lines: list) -> int:
+    """Detect the statement year from the due date or statement date printed on the bill."""
+    # Look for labeled date fields that carry the authoritative year
+    _DATE_LABEL_RE = re.compile(
+        r'(?:payment\s*due\s*date|due\s*date|statement\s*date|bill\s*date|as\s+of)'
+        r'.{0,30}?\b(20\d{2})\b',
+        re.IGNORECASE,
+    )
+    current_year = datetime.now().year
+    for line in lines:
+        m = _DATE_LABEL_RE.search(line)
+        if m:
+            return int(m.group(1))
+    # Fallback: use current year if no labeled date found
+    return current_year
+
+
+def _clamp_year(year: int, ref_year: int) -> int:
+    """Replace years that don't match the statement period with the statement year.
+    Allows ±1 to handle Dec/Jan cross-year statements."""
+    if abs(year - ref_year) <= 1:
+        return year
+    return ref_year
+
+
 def _parse_date_raw(raw: str, ref_year: int):
     raw = raw.strip()
+    # Citibank format: DDMMm no space e.g. "19JUN", "04JUL"
+    m = re.match(r'^(\d{1,2})(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$', raw, re.IGNORECASE)
+    if m:
+        month = _MONTH_ABBR.get(m.group(2)[:3].lower())
+        if month:
+            try:
+                return datetime(ref_year, month, int(m.group(1))).strftime('%Y-%m-%d')
+            except ValueError:
+                pass
     m = re.match(r'(\d{1,2})\s+([A-Za-z]{3})\w*(?:\s+(\d{2,4}))?$', raw)
     if m:
         d, mo, yr = m.group(1), m.group(2), m.group(3)
         month = _MONTH_ABBR.get(mo[:3].lower())
         if month:
             year = ref_year if not yr else (int(yr) + 2000 if int(yr) < 100 else int(yr))
+            year = _clamp_year(year, ref_year)
             try:
                 return datetime(year, month, int(d)).strftime('%Y-%m-%d')
             except ValueError:
@@ -271,6 +397,7 @@ def _parse_date_raw(raw: str, ref_year: int):
     if m:
         d, mo, yr = m.groups()
         yr = int(yr); yr = yr + 2000 if yr < 100 else yr
+        yr = _clamp_year(yr, ref_year)
         try:
             return datetime(yr, int(mo), int(d)).strftime('%Y-%m-%d')
         except ValueError:
@@ -287,6 +414,7 @@ def _parse_date_raw(raw: str, ref_year: int):
 
 _DATE_PART = (
     r'(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w{0,6}(?:\s+\d{2,4})?'
+    r'|\d{1,2}(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'  # Citibank: 19JUN
     r'|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}'
     r'|\d{1,2}/\d{1,2})'
 )
@@ -332,7 +460,7 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
             "Try downloading a CSV from your bank's internet banking portal instead."
         )
 
-    ref_year = datetime.now().year
+    ref_year = _detect_statement_year(all_lines)
     results  = []
     for line in all_lines:
         line = line.strip()
@@ -342,7 +470,8 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
         if not m:
             continue
         date_raw, desc, amount_raw = m.group(1).strip(), m.group(2).strip(), m.group(3)
-        if re.search(r'\bCR\b', line, re.IGNORECASE):
+        # Skip credits: CR can appear as "1,234.56 CR" or "1,234.56CR" (no word boundary)
+        if re.search(r'CR\s*$', line, re.IGNORECASE):
             continue
         dl = desc.lower()
         if any(ph in dl for ph in _SKIP_PHRASES):
@@ -361,6 +490,14 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
             'description': desc,
             'category':    _guess_category(desc),
         })
+
+    # Upgrade uncategorized items using Gemini in a single batch call
+    other_indices = [i for i, r in enumerate(results) if r['category'] == 'Other']
+    if other_indices:
+        ai_cats = _ai_categorize_batch([results[i]['description'] for i in other_indices])
+        for i, cat in zip(other_indices, ai_cats):
+            results[i]['category'] = cat
+
     return results
 
 

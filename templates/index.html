@@ -219,6 +219,15 @@
       <div style="display:flex;flex-direction:column;gap:1.25rem;padding:.25rem 0">
 
         <div class="data-item">
+          <span style="font-size:1.5rem;line-height:1">&#129302;</span>
+          <div style="flex:1">
+            <div class="data-item-title">Import from Credit Card Statement (PDF)</div>
+            <div class="data-item-desc">Upload your bank's PDF statement. Transactions are extracted automatically and shown in a review table — edit amounts (e.g. if you split a bill via PayLah), reassign categories, or uncheck rows to skip before saving.</div>
+            <button class="btn btn-primary" onclick="document.getElementById('stmt-file-input').click()">Upload PDF Statement</button>
+          </div>
+        </div>
+
+        <div class="data-item">
           <span style="font-size:1.5rem;line-height:1">&#11015;</span>
           <div style="flex:1">
             <div class="data-item-title">Export to CSV</div>
@@ -233,15 +242,6 @@
             <div class="data-item-title">Import from CSV</div>
             <div class="data-item-desc">Upload a CSV with columns: <strong>Date</strong> (YYYY-MM-DD), <strong>Amount</strong>, <strong>Category</strong>, <strong>Description</strong>. Existing records are not affected.</div>
             <button class="btn btn-primary" onclick="document.getElementById('import-file-input').click()">Choose File &amp; Import</button>
-          </div>
-        </div>
-
-        <div class="data-item">
-          <span style="font-size:1.5rem;line-height:1">&#129302;</span>
-          <div style="flex:1">
-            <div class="data-item-title">Import from Credit Card Statement (PDF)</div>
-            <div class="data-item-desc">Upload your bank's PDF statement. Transactions are extracted automatically and shown in a review table — edit amounts (e.g. if you split a bill via PayLah), reassign categories, or uncheck rows to skip before saving.</div>
-            <button class="btn btn-primary" onclick="document.getElementById('stmt-file-input').click()">Upload PDF Statement</button>
           </div>
         </div>
 

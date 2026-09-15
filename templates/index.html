@@ -28,6 +28,7 @@
         </button>
       </div>
       <input type="file" id="import-file-input" accept=".csv" style="display:none" onchange="importFromCSV(this)">
+      <input type="file" id="stmt-file-input" accept=".pdf" style="display:none" onchange="uploadStatement(this)">
     </div>
   </div>
 </header>
@@ -170,7 +171,7 @@
 
   <!-- ── Settings tab ── -->
   <div id="tab-settings" style="display:none">
-    <div class="card" style="max-width:480px">
+    <div class="card" style="max-width:680px">
       <div class="card-header"><span class="card-title">Settings</span></div>
       <div style="padding:1.25rem 1.5rem">
         <div class="theme-toggle-wrap">
@@ -180,6 +181,32 @@
             <span class="toggle-track"></span>
             <span class="toggle-thumb"></span>
           </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="max-width:680px">
+      <div class="card-header">
+        <span class="card-title">Merchant Rules</span>
+        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">Applied automatically when parsing statements</span>
+      </div>
+      <div style="padding:1.25rem 1.5rem">
+        <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:1.1rem">
+          When a transaction description contains a pattern, it is assigned your chosen category — overriding the default. Rules are also saved automatically when you correct a category in the statement review.
+        </p>
+        <div style="display:flex;gap:.6rem;align-items:flex-end;margin-bottom:1.25rem;flex-wrap:wrap">
+          <div class="fg" style="flex:1;min-width:180px">
+            <label for="rule-pattern">Keyword / merchant pattern</label>
+            <input id="rule-pattern" type="text" placeholder="e.g. grab, mcdonald, my dentist…">
+          </div>
+          <div class="fg">
+            <label for="rule-category">Category</label>
+            <select id="rule-category"></select>
+          </div>
+          <button class="btn btn-primary" onclick="addMerchantRule()">Add Rule</button>
+        </div>
+        <div id="merchant-rules-wrap">
+          <div class="empty" style="padding:1.5rem 0">No rules saved yet.</div>
         </div>
       </div>
     </div>
@@ -209,6 +236,15 @@
           </div>
         </div>
 
+        <div class="data-item">
+          <span style="font-size:1.5rem;line-height:1">&#129302;</span>
+          <div style="flex:1">
+            <div class="data-item-title">Import from Credit Card Statement (PDF)</div>
+            <div class="data-item-desc">Upload your bank's PDF statement. Transactions are extracted automatically and shown in a review table — edit amounts (e.g. if you split a bill via PayLah), reassign categories, or uncheck rows to skip before saving.</div>
+            <button class="btn btn-primary" onclick="document.getElementById('stmt-file-input').click()">Upload PDF Statement</button>
+          </div>
+        </div>
+
       </div>
     </div>
   </div><!-- end #tab-data -->
@@ -225,6 +261,24 @@
       <button class="btn btn-ghost" onclick="resolveConfirm(false)">Cancel</button>
       <button class="btn" onclick="resolveConfirm(true)" style="background:#ef4444;border:1px solid #ef4444;color:#fff">Confirm</button>
     </div>
+  </div>
+</div>
+
+<!-- ── Statement review modal ── -->
+<div id="stmt-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:150;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--bg-card);border-radius:.75rem;width:100%;max-width:960px;height:90vh;display:flex;flex-direction:column;box-shadow:0 25px 60px rgba(0,0,0,.35);overflow:hidden">
+    <div style="padding:1.1rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:.75rem;flex-shrink:0">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.95rem;font-weight:700;color:var(--text)">Review Statement Transactions</div>
+        <div id="stmt-count" style="font-size:.78rem;color:var(--text-muted);margin-top:.2rem"></div>
+      </div>
+      <button class="btn btn-ghost" onclick="closeStatementModal()">Cancel</button>
+      <button class="btn btn-primary" id="stmt-save-btn" onclick="saveStatementRows()">Save Expenses</button>
+    </div>
+    <div id="stmt-info-banner" style="padding:.6rem 1.5rem;border-bottom:1px solid;font-size:.78rem;flex-shrink:0">
+      Edit amounts if you split a bill (e.g. paid via PayLah and were reimbursed), change categories, or uncheck rows to skip them.
+    </div>
+    <div id="stmt-table-wrap" style="overflow-y:auto;flex:1;min-height:0"></div>
   </div>
 </div>
 

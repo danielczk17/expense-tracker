@@ -1,6 +1,7 @@
 import csv
 import io
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -46,10 +47,321 @@ def init_db():
                 monthly_limit REAL NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS merchant_rules (
+                pattern  TEXT PRIMARY KEY,
+                category TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
 init_db()
+
+
+# ── Statement-parsing helpers ─────────────────────────────────────────────────
+
+_MONTH_ABBR = {
+    'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
+    'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12,
+}
+
+_SKIP_PHRASES = [
+    'payment received','payment due','thank you for payment',
+    'minimum payment','balance b/f','balance c/f',
+    'previous balance','opening balance','closing balance',
+    'credit limit','available credit','finance charge',
+    'late charge','late payment fee','annual fee',
+    'interest charge','gst charged','brought forward',
+    'carried forward','total amount due','amount due',
+    'statement date','account number',
+]
+
+_CATEGORY_KEYWORDS = {
+    'Food & Dining': [
+        # Fast food
+        'mcdonald','kfc','subway','burger king','mos burger','popeyes',
+        'pizza hut','domino','jollibee','long john','a&w','carl\'s jr',
+        'fish & co','swensen','pepper lunch','ichiban','ootoya','waraku',
+        'din tai fung','hai di lao','the soup spoon','eighteen chefs',
+        'pastamania','saizeriya','yoshinoya','ajisen',
+        # Coffee & beverages
+        'starbucks','toast box','ya kun','coffee bean','the coffee',
+        'gong cha','koi ','liho','playmade','tiger sugar','the alley',
+        'heytea','nayuki','r&b tea','chatime','tealive','each a cup',
+        'ding tea','machi machi','daboba',
+        # Bakery & desserts
+        'breadtalk','bengawan','prima deli','bread garden','four leaves',
+        'old chang kee','polar puffs','lim chee guan','bee cheng hiang',
+        # Delivery
+        'foodpanda','deliveroo','grabfood','grab food','mcdelivery',
+        'pandamart','grab mart',
+        # Dining general
+        'restaurant','cafe','kopitiam','hawker','bakery','food court',
+        'food republic','food junction','koufu','banquet','foodclique',
+        'select group','eatery','kitchen','bistro','catering',
+        # Chinese
+        'putien','crystal jade','paradise dynasty','paradise inn',
+        'imperial treasure','tunglok','tung lok','man fu yuan',
+        'canton paradise','dragon phoenix',
+        # Japanese
+        'sushi','ramen','udon','tonkatsu','yakiniku','sakae sushi',
+        'sushiro','itacho','genki sushi',
+        # Supermarkets / Grocery
+        'fairprice','ntuc','giant','cold storage','sheng siong',
+        'coldstorage','supermarket','grocery','don don donki',
+        'redmart','prime supermarket','7-eleven','7eleven','cheers',
+        'amazon fresh','marketplace by',
+        # Others
+        'noodle','bbq','steamboat','hot pot','dim sum','mala hotpot',
+        'economy rice','chicken rice','mixed rice','laksa','wanton',
+        'porridge','western food',
+    ],
+    'Transport': [
+        'grab','gojek','comfortdelgro','comfort delgro','citycab',
+        'trans-cab','transcab','tada','ryde','mvl','bluesg',
+        'prime taxi','premier taxi','silver cab','london cab',
+        'limousine','maxi cab','maxicab',
+        'smrt','sbs transit','go-ahead','tower transit',
+        'ez-link','nets flash','concession',
+        'parking','carpark','car park','wilson parking',
+        'esso','shell','caltex','sinopec','spc','petron',
+        'petrol','diesel','fuel','erp',
+        'hertz','avis','budget rent','car rental','shariot',
+        'cycle & carriage','vicom','changi recommend',
+    ],
+    'Shopping': [
+        # Online
+        'lazada','shopee','amazon','taobao','qoo10','carousell',
+        'zalora','asos','ezbuy','aliexpress','shein',
+        # Electronics
+        'challenger','harvey norman','best denki','courts','gain city',
+        'sim lim','apple store',
+        # Department / Fashion
+        'isetan','metro','og ','bhg','robinsons','tangs','takashimaya',
+        'marks & spencer','muji','uniqlo','zara','h&m','forever 21',
+        'cotton on','bershka','pull & bear','mango','gap','levi',
+        'tommy','polo ralph','calvin klein',
+        # Footwear / Accessories
+        'charles & keith','pedro','nine west','steve madden','aldo',
+        'foot locker','new balance store','adidas store','nike store',
+        # Home / Lifestyle
+        'ikea','spotlight','home-fix','daiso','miniso','mr diy',
+        # Books
+        'popular','kinokuniya','typo',
+        # Cosmetics
+        'sephora','mac cosmetics','benefit','kiehl','laneige','innisfree',
+        'watsons','guardian',
+        # Other
+        'mustafa',
+    ],
+    'Entertainment': [
+        # Streaming
+        'netflix','spotify','apple.com','apple tv','disney+','disneyplus',
+        'hbo','amazon prime','youtube premium','crunchyroll','viu',
+        'iflix','tidal',
+        # Gaming
+        'steam','playstation','xbox','nintendo','garena','razer gold',
+        'google play','app store','roblox','riot games','epic games',
+        'twitch',
+        # Cinema / Shows
+        'cathay','shaw','golden village','gv cinema','cinema',
+        'sistic','ticketmaster','peatix',
+        # Attractions
+        'klook','kkday','universal studio','sentosa','zoo','bird park',
+        'aquarium','science centre','sports hub',
+        'bowling','arcade','karaoke','escape room','trampoline',
+        # Software subscriptions
+        'canva','figma','dropbox','icloud','google one','onedrive',
+        'notion','zoom','microsoft 365','office 365','adobe',
+    ],
+    'Health': [
+        # Hospitals
+        'nuh ','national university hospital','sgh ','singapore general',
+        'tan tock seng','ttsh','kkh ','kk hospital',
+        'thomson medical','mount elizabeth','gleneagles','parkway',
+        'mount alvernia','farrer park','columbia asia','raffles hospital',
+        # Clinics
+        'clinic','polyclinic','medical centre','healthway','ntuc health',
+        'fullerton health','shenton medical','onecare','minmed',
+        # Dental
+        'dental','q&m','national dental','ndcs','pacific dental',
+        'smilepoint','tooth club',
+        # Pharmacy
+        'unity pharmacy','guardian pharmacy','watsons health','pharmacy',
+        # Allied health
+        'physiotherapy','physio','chiropractor','tcm','acupuncture',
+        # Fitness
+        'gym','fitness','yoga','pilates','anytime fitness','pure fitness',
+        'virgin active','fitness first','f45',
+        # Optical
+        'eyewear','optical','owndays','nanyang optical','spectacle hut',
+    ],
+    'Utilities': [
+        'singapore power','sp group','sp services','city gas',
+        'pub ','utilities board',
+        'senoko','tuas power','pacific light','sembcorp','union power',
+        'keppel electric','geneco','iswitch','sunseap',
+        'singtel','starhub','m1 ','circle life','giga','simba',
+        'broadband','mobile plan','internet service','fibre',
+        'myrepublic','viewqwest',
+    ],
+    'Housing': [
+        'hdb ','town council','conservancy','property tax',
+        'management fee','sinking fund','maintenance fee',
+        'rent ','rental ','condo fee',
+        'renovation','interior design',
+        'aircon service','air-con service','pest control',
+        'laundry','maid agency','domestic helper',
+    ],
+    'Education': [
+        'nus ','ntu ','smu ','sutd ','sit ','sim ','kaplan','mdis',
+        'temasek poly','ngee ann poly','singapore poly','republic poly',
+        'nanyang poly','ite college',
+        'tuition','enrichment','mindchamps','berries','learning lab',
+        'newton learning','geniebook','snapask','kumon',
+        'coursera','udemy','skillsfuture','linkedin learning',
+        'masterclass','edx','datacamp',
+        'british council','ielts','toefl','pearson vue',
+    ],
+    'Travel': [
+        # Airlines
+        'singapore airlines','sia ','scoot','jetstar','air asia',
+        'cathay pacific','emirates','qatar airways','british airways',
+        'lufthansa','klm','thai airways','malaysia airlines',
+        'batik air','lion air','vietjet','indigo air',
+        # Booking
+        'booking.com','agoda','airbnb','expedia','trip.com',
+        'hotels.com','traveloka','ctrip',
+        # Hotels
+        'marriott','hilton','hyatt','sheraton','westin',
+        'intercontinental','holiday inn','crowne plaza',
+        'ibis','novotel','mercure',
+        'mandarin oriental','raffles hotel','st regis','four seasons',
+        'ritz-carlton','marina bay sands','hard rock hotel',
+        # Travel services
+        'changi airport','chan brothers','travel insurance',
+        'allianz travel','axa travel','dfs','duty free',
+    ],
+}
+
+
+def _guess_category(description: str) -> str:
+    d = description.lower()
+    for cat, keywords in _CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            if kw in d:
+                return cat
+    return 'Other'
+
+
+def _parse_date_raw(raw: str, ref_year: int):
+    raw = raw.strip()
+    m = re.match(r'(\d{1,2})\s+([A-Za-z]{3})\w*(?:\s+(\d{2,4}))?$', raw)
+    if m:
+        d, mo, yr = m.group(1), m.group(2), m.group(3)
+        month = _MONTH_ABBR.get(mo[:3].lower())
+        if month:
+            year = ref_year if not yr else (int(yr) + 2000 if int(yr) < 100 else int(yr))
+            try:
+                return datetime(year, month, int(d)).strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+    m = re.match(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$', raw)
+    if m:
+        d, mo, yr = m.groups()
+        yr = int(yr); yr = yr + 2000 if yr < 100 else yr
+        try:
+            return datetime(yr, int(mo), int(d)).strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+    m = re.match(r'(\d{1,2})/(\d{1,2})$', raw)
+    if m:
+        mo, d = m.groups()
+        try:
+            return datetime(ref_year, int(mo), int(d)).strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+    return None
+
+
+_DATE_PART = (
+    r'(?:\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w{0,6}(?:\s+\d{2,4})?'
+    r'|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}'
+    r'|\d{1,2}/\d{1,2})'
+)
+_LINE_RE = re.compile(
+    r'^(' + _DATE_PART + r')\s+(.+?)\s+([\d,]+\.\d{2})\s*(?:CR|Dr|Cr)?\s*$',
+    re.IGNORECASE,
+)
+
+
+def _apply_merchant_rules(transactions: list) -> list:
+    with get_db() as conn:
+        rules = conn.execute("SELECT pattern, category FROM merchant_rules").fetchall()
+    rules_list = [(r["pattern"], r["category"]) for r in rules]
+    if not rules_list:
+        return transactions
+    for txn in transactions:
+        d = txn["description"].lower()
+        matched = next((cat for pat, cat in rules_list if pat == d), None)
+        if not matched:
+            matched = next((cat for pat, cat in rules_list if pat in d), None)
+        if matched:
+            txn["category"] = matched
+    return transactions
+
+
+def parse_pdf_statement(pdf_bytes: bytes) -> list:
+    try:
+        import pdfplumber
+    except ImportError:
+        raise RuntimeError(
+            "pdfplumber is not installed — restart the server after running: "
+            "pip install pdfplumber"
+        )
+    all_lines = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text(x_tolerance=3, y_tolerance=3) or ""
+            all_lines.extend(text.splitlines())
+
+    if not any(ln.strip() for ln in all_lines):
+        raise RuntimeError(
+            "No text could be extracted — this may be a scanned PDF. "
+            "Try downloading a CSV from your bank's internet banking portal instead."
+        )
+
+    ref_year = datetime.now().year
+    results  = []
+    for line in all_lines:
+        line = line.strip()
+        if len(line) < 10:
+            continue
+        m = _LINE_RE.match(line)
+        if not m:
+            continue
+        date_raw, desc, amount_raw = m.group(1).strip(), m.group(2).strip(), m.group(3)
+        if re.search(r'\bCR\b', line, re.IGNORECASE):
+            continue
+        dl = desc.lower()
+        if any(ph in dl for ph in _SKIP_PHRASES):
+            continue
+        if len(desc) < 3:
+            continue
+        amount = round(float(amount_raw.replace(',', '')), 2)
+        if amount <= 0 or amount > 50_000:
+            continue
+        date_str = _parse_date_raw(date_raw, ref_year)
+        if not date_str:
+            continue
+        results.append({
+            'date':        date_str,
+            'amount':      amount,
+            'description': desc,
+            'category':    _guess_category(desc),
+        })
+    return results
 
 
 @app.route("/")
@@ -322,6 +634,61 @@ def api_import():
             conn.commit()
 
     return jsonify({"added": added, "errors": errors})
+
+
+# ---------------------------------------------------------------------------
+# Merchant rules
+# ---------------------------------------------------------------------------
+
+@app.route("/api/merchant-rules")
+def api_get_merchant_rules():
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM merchant_rules ORDER BY pattern").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/merchant-rule", methods=["POST"])
+def api_set_merchant_rule():
+    data     = request.get_json(force=True) or {}
+    pattern  = str(data.get("pattern", "")).strip().lower()
+    category = str(data.get("category", "")).strip()
+    if not pattern or not category:
+        return jsonify({"error": "pattern and category required"}), 400
+    with _write_lock:
+        with get_db() as conn:
+            conn.execute("INSERT OR REPLACE INTO merchant_rules VALUES (?,?)", (pattern, category))
+            conn.commit()
+    return jsonify({"success": True})
+
+
+@app.route("/api/merchant-rule/<path:pattern>", methods=["DELETE"])
+def api_delete_merchant_rule(pattern):
+    with _write_lock:
+        with get_db() as conn:
+            conn.execute("DELETE FROM merchant_rules WHERE pattern=?", (pattern,))
+            conn.commit()
+    return jsonify({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# Statement parsing
+# ---------------------------------------------------------------------------
+
+@app.route("/api/parse-statement", methods=["POST"])
+def api_parse_statement():
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+    f = request.files["file"]
+    if not f.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "Only PDF files are supported"}), 400
+    try:
+        txns = parse_pdf_statement(f.read())
+        txns = _apply_merchant_rules(txns)
+        return jsonify({"transactions": txns})
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 422
+    except Exception as exc:
+        return jsonify({"error": f"Could not parse PDF: {exc}"}), 500
 
 
 if __name__ == "__main__":

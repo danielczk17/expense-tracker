@@ -23,6 +23,7 @@ let editingId     = null;
 let selectedIds   = new Set();
 let confirmResolve = null;
 let expPage       = 1;
+let stmtRows      = [];
 const EXP_PAGE_SIZE = 25;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -465,6 +466,9 @@ function switchTab(name) {
   if (name === 'budget' && summaryData) {
     renderBudgetTab(summaryData);
   }
+  if (name === 'settings') {
+    loadMerchantRules();
+  }
 }
 
 // ── Expense log toggle ────────────────────────────────────────────────────────
@@ -516,6 +520,259 @@ async function importFromCSV(input) {
   } finally {
     setSpinner(false);
   }
+}
+
+// ── Statement upload & review ─────────────────────────────────────────────────
+async function uploadStatement(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+
+  const form = new FormData();
+  form.append('file', file);
+
+  setSpinner(true);
+  try {
+    const res  = await fetch('/api/parse-statement', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+    openStatementModal(data.transactions);
+  } finally {
+    setSpinner(false);
+  }
+}
+
+function openStatementModal(transactions) {
+  stmtRows = transactions.map((t, i) => ({ ...t, _id: i, included: true, _origCategory: t.category }));
+  renderStmtModal();
+  document.getElementById('stmt-overlay').style.display = 'flex';
+}
+
+function renderStmtModal() {
+  const included = stmtRows.filter(r => r.included).length;
+  document.getElementById('stmt-count').textContent = stmtRows.length
+    ? `${stmtRows.length} transaction${stmtRows.length !== 1 ? 's' : ''} found — review and edit before saving`
+    : 'No transactions found';
+  const saveBtn = document.getElementById('stmt-save-btn');
+  saveBtn.textContent = `Save ${included} Expense${included !== 1 ? 's' : ''}`;
+  saveBtn.disabled    = included === 0;
+
+  const wrap = document.getElementById('stmt-table-wrap');
+  if (!stmtRows.length) {
+    wrap.innerHTML = `<div class="stmt-empty">
+      No transactions could be parsed from this PDF.<br>
+      The statement format may not be recognised — try downloading a CSV from your bank portal and using <strong>Import from CSV</strong> instead.
+    </div>`;
+    return;
+  }
+
+  let html = `<table class="stmt-table">
+    <thead><tr>
+      <th class="chk"><input type="checkbox" id="stmt-chk-all" onchange="toggleAllStmt(this.checked)"></th>
+      <th>Date</th>
+      <th style="width:100%">Description</th>
+      <th style="text-align:right">Amount (S$)</th>
+      <th>Category</th>
+      <th></th>
+    </tr></thead><tbody>`;
+
+  for (const row of stmtRows) {
+    const ex = !row.included;
+    const catOpts = categories.map(c =>
+      `<option value="${escAttr(c)}"${c === row.category ? ' selected' : ''}>${escHtml(c)}</option>`
+    ).join('');
+    html += `
+    <tr class="stmt-row${ex ? ' stmt-excl' : ''}" data-sid="${row._id}">
+      <td class="chk">
+        <input type="checkbox" ${row.included ? 'checked' : ''}
+          onchange="toggleStmtRow(${row._id},this.checked)">
+      </td>
+      <td>
+        <input type="date" class="stmt-input stmt-date" value="${escAttr(row.date)}"
+          onchange="updateStmtRow(${row._id},'date',this.value)" ${ex ? 'disabled' : ''}>
+      </td>
+      <td>
+        <input type="text" class="stmt-input stmt-desc" value="${escAttr(row.description)}"
+          oninput="updateStmtRow(${row._id},'description',this.value)" ${ex ? 'disabled' : ''}>
+      </td>
+      <td style="text-align:right">
+        <input type="number" class="stmt-input stmt-amount" value="${row.amount}"
+          min="0.01" step="0.01"
+          onchange="updateStmtRow(${row._id},'amount',parseFloat(this.value)||0)" ${ex ? 'disabled' : ''}>
+      </td>
+      <td>
+        <select class="stmt-input stmt-cat"
+          onchange="updateStmtRow(${row._id},'category',this.value)" ${ex ? 'disabled' : ''}>
+          ${catOpts}
+        </select>
+      </td>
+      <td>
+        <button class="btn btn-del" onclick="removeStmtRow(${row._id})"
+          style="padding:.18rem .4rem;font-size:.68rem;line-height:1.4">&#x2715;</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  const allIn  = stmtRows.every(r => r.included);
+  const someIn = stmtRows.some(r => r.included);
+  const chkAll = document.getElementById('stmt-chk-all');
+  if (chkAll) { chkAll.checked = allIn; chkAll.indeterminate = !allIn && someIn; }
+}
+
+function updateStmtRow(id, field, value) {
+  const row = stmtRows.find(r => r._id === id);
+  if (row) row[field] = value;
+  const included = stmtRows.filter(r => r.included).length;
+  const saveBtn  = document.getElementById('stmt-save-btn');
+  if (saveBtn) { saveBtn.textContent = `Save ${included} Expense${included !== 1 ? 's' : ''}`; saveBtn.disabled = included === 0; }
+}
+
+function toggleStmtRow(id, checked) {
+  const row = stmtRows.find(r => r._id === id);
+  if (!row) return;
+  row.included = checked;
+  const tr = document.querySelector(`.stmt-row[data-sid="${id}"]`);
+  if (tr) {
+    tr.classList.toggle('stmt-excl', !checked);
+    tr.querySelectorAll('.stmt-input').forEach(el => { el.disabled = !checked; });
+  }
+  const included = stmtRows.filter(r => r.included).length;
+  const saveBtn  = document.getElementById('stmt-save-btn');
+  if (saveBtn) { saveBtn.textContent = `Save ${included} Expense${included !== 1 ? 's' : ''}`; saveBtn.disabled = included === 0; }
+  const allIn  = stmtRows.every(r => r.included);
+  const someIn = stmtRows.some(r => r.included);
+  const chkAll = document.getElementById('stmt-chk-all');
+  if (chkAll) { chkAll.checked = allIn; chkAll.indeterminate = !allIn && someIn; }
+}
+
+function toggleAllStmt(checked) {
+  stmtRows.forEach(r => { r.included = checked; });
+  renderStmtModal();
+}
+
+function removeStmtRow(id) {
+  stmtRows = stmtRows.filter(r => r._id !== id);
+  renderStmtModal();
+}
+
+function closeStatementModal() {
+  document.getElementById('stmt-overlay').style.display = 'none';
+  stmtRows = [];
+}
+
+async function saveStatementRows() {
+  const toSave = stmtRows.filter(r => r.included);
+  if (!toSave.length) return;
+
+  const invalid = toSave.filter(r => !r.date || !r.amount || r.amount <= 0);
+  if (invalid.length) {
+    showToast(`${invalid.length} row${invalid.length > 1 ? 's have' : ' has'} a missing date or invalid amount`, 'error');
+    return;
+  }
+
+  setSpinner(true);
+  try {
+    const results = await Promise.all(toSave.map(row =>
+      fetch('/api/expense', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ date: row.date, amount: row.amount, category: row.category, description: row.description }),
+      }).then(r => r.json())
+    ));
+    const saved  = results.filter(r => r.success).length;
+    const failed = results.length - saved;
+
+    // Auto-save merchant rules for any rows where the user changed the category
+    const changedRules = toSave.filter(r => r.category !== r._origCategory);
+    if (changedRules.length) {
+      await Promise.all(changedRules.map(r =>
+        fetch('/api/merchant-rule', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ pattern: r.description.toLowerCase().trim(), category: r.category }),
+        })
+      ));
+    }
+
+    closeStatementModal();
+    showToast(`Saved ${saved} expense${saved !== 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}${changedRules.length ? ` · ${changedRules.length} rule${changedRules.length !== 1 ? 's' : ''} learned` : ''}`);
+    expPage = 1;
+    await Promise.all([loadSummary(), loadExpenses()]);
+  } finally {
+    setSpinner(false);
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('stmt-overlay').style.display !== 'none') {
+    closeStatementModal();
+  }
+});
+
+// ── Merchant rules ────────────────────────────────────────────────────────────
+async function loadMerchantRules() {
+  // Populate category select
+  const sel = document.getElementById('rule-category');
+  if (sel) {
+    sel.innerHTML = categories.map(c => `<option value="${escAttr(c)}">${escHtml(c)}</option>`).join('');
+  }
+  const res   = await fetch('/api/merchant-rules');
+  const rules = await res.json();
+  renderMerchantRules(rules);
+}
+
+function renderMerchantRules(rules) {
+  const wrap = document.getElementById('merchant-rules-wrap');
+  if (!wrap) return;
+  if (!rules.length) {
+    wrap.innerHTML = '<div class="empty" style="padding:1.5rem 0">No rules saved yet.</div>';
+    return;
+  }
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:.83rem">
+    <thead><tr style="background:var(--bg-subtle)">
+      <th style="text-align:left;padding:.45rem .75rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Pattern (contains)</th>
+      <th style="text-align:left;padding:.45rem .75rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Assigned Category</th>
+      <th style="padding:.45rem .75rem;border-bottom:1px solid var(--border)"></th>
+    </tr></thead><tbody>`;
+  for (const r of rules) {
+    const color = getCategoryColor(r.category);
+    html += `<tr style="border-bottom:1px solid var(--border-subtle)">
+      <td style="padding:.5rem .75rem;font-family:monospace;font-size:.8rem;color:var(--text)">${escHtml(r.pattern)}</td>
+      <td style="padding:.5rem .75rem">
+        <span class="cat-chip" style="background:${color}1a;color:${color};border-color:${color}40">${escHtml(r.category)}</span>
+      </td>
+      <td style="padding:.5rem .75rem;text-align:right">
+        <button class="btn btn-del" onclick="deleteMerchantRule(${JSON.stringify(r.pattern)})"
+          style="padding:.18rem .4rem;font-size:.68rem">Remove</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+async function addMerchantRule() {
+  const pattern  = document.getElementById('rule-pattern').value.trim().toLowerCase();
+  const category = document.getElementById('rule-category').value;
+  if (!pattern) { showToast('Enter a keyword or merchant name', 'error'); return; }
+  const res  = await fetch('/api/merchant-rule', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ pattern, category }),
+  });
+  const data = await res.json();
+  if (data.error) { showToast(data.error, 'error'); return; }
+  document.getElementById('rule-pattern').value = '';
+  showToast('Rule saved');
+  await loadMerchantRules();
+}
+
+async function deleteMerchantRule(pattern) {
+  await fetch(`/api/merchant-rule/${encodeURIComponent(pattern)}`, { method: 'DELETE' });
+  showToast('Rule removed');
+  await loadMerchantRules();
 }
 
 // ── Dark mode ─────────────────────────────────────────────────────────────────

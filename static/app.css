@@ -407,6 +407,67 @@ body.dark #confirm-overlay > div { background: var(--bg-card); color: var(--text
 body.dark input[type="date"], body.dark input[type="month"] { color-scheme: dark; }
 body.dark .budget-table input { background: var(--input-bg); color: var(--text); border-color: var(--border); }
 
+/* ── Statement review modal ── */
+#stmt-info-banner {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1e40af;
+}
+body.dark #stmt-info-banner {
+  background: #1e3a5f;
+  border-color: #1e40af;
+  color: #93c5fd;
+}
+.stmt-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.stmt-table th {
+  padding: .5rem .75rem;
+  text-align: left;
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.stmt-table th.chk { text-align: center; width: 36px; }
+.stmt-table td {
+  padding: .35rem .5rem;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: middle;
+}
+.stmt-table td.chk { text-align: center; }
+.stmt-table tbody tr:hover { background: var(--bg-subtle); }
+.stmt-row.stmt-excl { opacity: .4; }
+.stmt-input {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .28rem .45rem;
+  font-size: .8rem;
+  color: var(--text);
+  background: var(--input-bg);
+  font-family: inherit;
+  outline: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+.stmt-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.12); }
+.stmt-input:disabled { background: transparent; border-color: transparent; color: var(--text-faint); }
+.stmt-date   { width: 130px; }
+.stmt-desc   { width: 100%; min-width: 140px; }
+.stmt-amount { width: 88px; text-align: right; }
+.stmt-cat    { width: 150px; }
+.stmt-empty  {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: .85rem;
+  line-height: 1.7;
+}
+
 /* ── Responsive ── */
 @media (max-width: 900px) {
   .summary-strip      { grid-template-columns: repeat(2, 1fr); }

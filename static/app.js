@@ -467,6 +467,7 @@ function switchTab(name) {
     renderBudgetTab(summaryData);
   }
   if (name === 'settings') {
+    renderCategoryChips();
     loadMerchantRules();
   }
 }
@@ -712,6 +713,46 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Merchant rules ────────────────────────────────────────────────────────────
+// ── Category management ───────────────────────────────────────────────────────
+function renderCategoryChips() {
+  const wrap = document.getElementById('category-chips');
+  if (!wrap) return;
+  wrap.innerHTML = categories.map(c => {
+    const color = getCategoryColor(c);
+    return `<span style="display:inline-flex;align-items:center;gap:.3rem;padding:.3rem .65rem;border-radius:999px;font-size:.78rem;font-weight:600;background:${color}1a;color:${color};border:1px solid ${color}40">
+      ${escHtml(c)}
+      <button onclick="deleteCategory(${JSON.stringify(c)})" title="Remove"
+        style="background:none;border:none;cursor:pointer;color:${color};opacity:.6;font-size:.85rem;line-height:1;padding:0 0 0 .1rem">&times;</button>
+    </span>`;
+  }).join('');
+}
+
+async function addCategory() {
+  const input = document.getElementById('new-category-name');
+  const name  = input.value.trim();
+  if (!name) { showToast('Enter a category name', 'error'); return; }
+  const res  = await fetch('/api/categories', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ name }),
+  });
+  const data = await res.json();
+  if (data.error) { showToast(data.error, 'error'); return; }
+  input.value = '';
+  await loadCategories();
+  renderCategoryChips();
+  showToast(`"${name}" added`);
+}
+
+async function deleteCategory(name) {
+  const confirmed = await askConfirm(`Remove category "${name}"? Existing expenses in this category won't be deleted.`);
+  if (!confirmed) return;
+  await fetch(`/api/categories/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  await loadCategories();
+  renderCategoryChips();
+  showToast(`"${name}" removed`);
+}
+
 async function loadMerchantRules() {
   // Populate category select
   const sel = document.getElementById('rule-category');

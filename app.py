@@ -61,6 +61,19 @@ def init_db():
                 category TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                name     TEXT PRIMARY KEY,
+                sort_order INTEGER NOT NULL DEFAULT 999
+            )
+        """)
+        # Seed defaults only if table is empty
+        existing = conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+        if existing == 0:
+            conn.executemany(
+                "INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)",
+                [(name, i) for i, name in enumerate(DEFAULT_CATEGORIES)]
+            )
         conn.commit()
 
 
@@ -690,14 +703,41 @@ def api_summary():
 # Categories
 # ---------------------------------------------------------------------------
 
-@app.route("/api/categories")
+@app.route("/api/categories", methods=["GET"])
 def api_categories():
     with get_db() as conn:
-        used = conn.execute(
-            "SELECT DISTINCT category FROM expenses ORDER BY category"
+        rows = conn.execute(
+            "SELECT name FROM categories ORDER BY sort_order, name"
         ).fetchall()
-    used_list = [r["category"] for r in used]
-    return jsonify(list(dict.fromkeys(DEFAULT_CATEGORIES + used_list)))
+    return jsonify([r["name"] for r in rows])
+
+
+@app.route("/api/categories", methods=["POST"])
+def api_add_category():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Category name is required"}), 400
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM categories WHERE LOWER(name)=LOWER(?)", (name,)
+        ).fetchone()[0]
+        if existing:
+            return jsonify({"error": "Category already exists"}), 409
+        max_order = conn.execute("SELECT MAX(sort_order) FROM categories").fetchone()[0] or 0
+        conn.execute(
+            "INSERT INTO categories (name, sort_order) VALUES (?, ?)", (name, max_order + 1)
+        )
+        conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/categories/<name>", methods=["DELETE"])
+def api_delete_category(name):
+    with get_db() as conn:
+        conn.execute("DELETE FROM categories WHERE name=?", (name,))
+        conn.commit()
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

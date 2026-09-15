@@ -187,6 +187,23 @@
 
     <div class="card" style="max-width:680px">
       <div class="card-header">
+        <span class="card-title">Categories</span>
+        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">Add or remove spending categories</span>
+      </div>
+      <div style="padding:1.25rem 1.5rem">
+        <div style="display:flex;gap:.6rem;align-items:flex-end;margin-bottom:1.25rem">
+          <div class="fg" style="flex:1">
+            <label for="new-category-name">New category name</label>
+            <input id="new-category-name" type="text" placeholder="e.g. Pets, Gifts…" onkeydown="if(event.key==='Enter')addCategory()">
+          </div>
+          <button class="btn btn-primary" onclick="addCategory()">Add</button>
+        </div>
+        <div id="category-chips" style="display:flex;flex-wrap:wrap;gap:.5rem"></div>
+      </div>
+    </div>
+
+    <div class="card" style="max-width:680px">
+      <div class="card-header">
         <span class="card-title">Merchant Rules</span>
         <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">Applied automatically when parsing statements</span>
       </div>

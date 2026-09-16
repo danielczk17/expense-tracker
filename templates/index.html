@@ -50,8 +50,9 @@
       <div class="sub" id="s-budget-sub">—</div>
     </div>
     <div class="summary-card">
-      <div class="lbl">Expenses</div>
-      <div class="val" id="s-count">—</div>
+      <div class="lbl">vs Last Month</div>
+      <div class="val" id="s-vs-last">—</div>
+      <div class="sub" id="s-vs-last-sub">—</div>
     </div>
     <div class="summary-card">
       <div class="lbl">Top Category</div>
@@ -75,20 +76,49 @@
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Spending by Category</span>
+        <span class="card-title">Spending Overview</span>
         <span id="cat-chart-month" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
       </div>
-      <div id="cat-chart-empty" class="empty">No expenses recorded for this month.</div>
-      <div id="cat-chart-area" style="display:none;padding:1.25rem 1.5rem 1.5rem">
-        <div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem">
-          <div style="position:relative;width:190px;height:190px;flex-shrink:0">
-            <canvas id="cat-canvas" width="190" height="190" style="display:block"></canvas>
-            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
-              <div id="donut-label-sub" style="font-size:.6rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
-              <div id="donut-label-val" style="font-size:1rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
+      <div id="spending-charts-empty" class="empty">No expenses recorded for this month.</div>
+      <div id="spending-charts-area" style="display:none;padding:1.25rem 1.5rem 1.5rem;position:relative">
+        <div style="display:flex;gap:1.75rem;align-items:flex-start">
+
+          <!-- Left: two donuts stacked -->
+          <div style="display:flex;flex-direction:column;gap:1.5rem;flex-shrink:0">
+            <div>
+              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Category</div>
+              <div style="position:relative;width:160px;height:160px">
+                <canvas id="cat-canvas" width="160" height="160" style="display:block"></canvas>
+                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
+                  <div id="donut-label-sub" style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
+                  <div id="donut-label-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
+                </div>
+              </div>
+            </div>
+            <div id="bank-section" style="display:none">
+              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Mode</div>
+              <div style="position:relative;width:160px;height:160px">
+                <canvas id="bank-canvas" width="160" height="160" style="display:block"></canvas>
+                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
+                  <div style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
+                  <div id="bank-donut-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
+                </div>
+              </div>
             </div>
           </div>
-          <div id="cat-legend" style="display:flex;flex-direction:column;gap:.45rem;width:100%;max-width:360px"></div>
+
+          <!-- Right: both legends -->
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1.25rem">
+            <div>
+              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Category</div>
+              <div id="cat-legend" style="display:flex;flex-direction:column;gap:.4rem"></div>
+            </div>
+            <div id="bank-legend-section" style="display:none">
+              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Mode</div>
+              <div id="bank-legend" style="display:flex;flex-direction:column;gap:.4rem"></div>
+            </div>
+          </div>
+
         </div>
       </div>
     </div>
@@ -240,8 +270,12 @@
   <div id="tab-statements" style="display:none">
     <div class="card" style="max-width:860px">
       <div class="card-header">
-        <span class="card-title">Uploaded Statements</span>
-        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">History of all imported PDF statements</span>
+        <span class="card-title">Statements</span>
+        <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
+          <button id="stmt-delete-btn" class="btn" disabled onclick="deleteSelectedStatements()"
+            style="font-size:.8rem;padding:.35rem .85rem;background:#ef4444;border:1px solid #ef4444;color:#fff">Delete</button>
+          <button class="btn btn-primary" style="font-size:.8rem;padding:.35rem .85rem" onclick="document.getElementById('stmt-file-input').click()">&#129302; Upload PDF Statement</button>
+        </div>
       </div>
       <div id="statements-wrap" style="padding:.25rem 0">
         <div class="empty" style="padding:2rem 1.5rem">No statements uploaded yet.</div>
@@ -255,16 +289,7 @@
       <div class="card-header"><span class="card-title">Data Management</span></div>
       <div style="display:flex;flex-direction:column;gap:1.25rem;padding:.25rem 0">
 
-        <div class="data-item">
-          <span style="font-size:1.5rem;line-height:1">&#129302;</span>
-          <div style="flex:1">
-            <div class="data-item-title">Import from Credit Card Statement (PDF)</div>
-            <div class="data-item-desc">Upload your bank's PDF statement. Transactions are extracted automatically and shown in a review table — edit amounts (e.g. if you split a bill via PayLah), reassign categories, or uncheck rows to skip before saving.</div>
-            <button class="btn btn-primary" onclick="document.getElementById('stmt-file-input').click()">Upload PDF Statement</button>
-          </div>
-        </div>
-
-        <div class="data-item">
+        <div class="data-item" style="border-top:none">
           <span style="font-size:1.5rem;line-height:1">&#11015;</span>
           <div style="flex:1">
             <div class="data-item-title">Export to CSV</div>
@@ -279,6 +304,15 @@
             <div class="data-item-title">Import from CSV</div>
             <div class="data-item-desc">Upload a CSV with columns: <strong>Date</strong> (YYYY-MM-DD), <strong>Amount</strong>, <strong>Category</strong>, <strong>Description</strong>. Existing records are not affected.</div>
             <button class="btn btn-primary" onclick="document.getElementById('import-file-input').click()">Choose File &amp; Import</button>
+          </div>
+        </div>
+
+        <div class="data-item" style="border-top:1px solid var(--border);padding-top:1.25rem">
+          <span style="font-size:1.5rem;line-height:1">&#128465;</span>
+          <div style="flex:1">
+            <div class="data-item-title" style="color:#ef4444">Clear All Data</div>
+            <div class="data-item-desc">Permanently delete every expense and statement record. This cannot be undone — export a CSV backup first if needed.</div>
+            <button class="btn" style="background:#ef4444;border:1px solid #ef4444;color:#fff" onclick="clearAllData()">Clear All Data</button>
           </div>
         </div>
 

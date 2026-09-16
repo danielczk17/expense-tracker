@@ -7,10 +7,12 @@ const CATEGORY_COLORS = {
   'Shopping':       '#8b5cf6',
   'Entertainment':  '#ec4899',
   'Health':         '#10b981',
+  'Fitness':        '#22c55e',
   'Utilities':      '#f59e0b',
   'Housing':        '#3b82f6',
   'Education':      '#14b8a6',
   'Travel':         '#6366f1',
+  'Subscriptions':  '#a855f7',
   'Other':          '#94a3b8',
 };
 
@@ -20,11 +22,14 @@ const _prev = new Date(_now.getFullYear(), _now.getMonth() - 1, 1);
 let currentMonth  = `${_prev.getFullYear()}-${String(_prev.getMonth() + 1).padStart(2, '0')}`;
 let summaryData   = null;
 let allExpenses   = [];
+let sortedExpenses = [];
 let categories    = [];
 let editingId     = null;
 let selectedIds   = new Set();
 let confirmResolve = null;
 let expPage       = 1;
+let expSortCol    = 'date';
+let expSortAsc    = false;
 let stmtRows      = [];
 let stmtFilename  = '';
 const EXP_PAGE_SIZE = 25;
@@ -63,6 +68,7 @@ async function loadSummary() {
     summaryData = await res.json();
     renderSummaryStrip(summaryData);
     renderCategoryChart(summaryData);
+    renderBankChart(summaryData);
     renderMonthlyChart(summaryData);
     const budgetTab = document.getElementById('tab-budget');
     if (budgetTab && budgetTab.style.display !== 'none') {
@@ -120,8 +126,24 @@ function renderSummaryStrip(data) {
     budgetSubEl.textContent = 'Set in Budget tab';
   }
 
-  const expCount = data.by_category.reduce((s, c) => s + c.count, 0);
-  document.getElementById('s-count').textContent = expCount;
+  const vsEl    = document.getElementById('s-vs-last');
+  const vsSubEl = document.getElementById('s-vs-last-sub');
+  const prev = data.prev_total ?? 0;
+  if (prev === 0 && data.total === 0) {
+    vsEl.textContent    = '—';
+    vsEl.className      = 'val neutral';
+    vsSubEl.textContent = 'No data';
+  } else if (prev === 0) {
+    vsEl.textContent    = '—';
+    vsEl.className      = 'val neutral';
+    vsSubEl.textContent = 'No last month data';
+  } else {
+    const diff = data.total - prev;
+    const pct  = Math.round((diff / prev) * 100);
+    vsEl.textContent    = (diff >= 0 ? '+' : '') + fmt(diff);
+    vsEl.className      = 'val ' + (diff > 0 ? 'neg' : diff < 0 ? 'pos' : 'neutral');
+    vsSubEl.textContent = (pct >= 0 ? '+' : '') + pct + '% vs last month';
+  }
 
   const topCatEl    = document.getElementById('s-top-cat');
   const topCatAmtEl = document.getElementById('s-top-cat-amt');
@@ -138,20 +160,25 @@ function renderSummaryStrip(data) {
 
 // ── Category donut chart ──────────────────────────────────────────────────────
 function renderCategoryChart(data) {
-  const area     = document.getElementById('cat-chart-area');
-  const empty    = document.getElementById('cat-chart-empty');
   const monthLbl = document.getElementById('cat-chart-month');
-
   const d = new Date(data.month + '-01');
   monthLbl.textContent = d.toLocaleString('default', { month: 'long', year: 'numeric' });
 
-  if (!data.by_category.length) {
+  const hasCat  = data.by_category && data.by_category.length > 0;
+  const hasBank = data.by_bank && data.by_bank.length > 0;
+
+  // Show/hide the combined card area
+  const area  = document.getElementById('spending-charts-area');
+  const empty = document.getElementById('spending-charts-empty');
+  if (!hasCat && !hasBank) {
     area.style.display  = 'none';
     empty.style.display = '';
     return;
   }
   area.style.display  = '';
   empty.style.display = 'none';
+
+  if (!hasCat) return;
 
   const segments = data.by_category.map(c => ({
     label: c.category,
@@ -169,12 +196,56 @@ function renderCategoryChart(data) {
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;align-items:center;gap:.6rem;font-size:.82rem;padding:.2rem 0';
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.2rem 0';
     row.innerHTML =
       `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0"></div>` +
-      `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;min-width:46px;text-align:right;color:var(--text)">${pct}%</div>`;
+      `<div style="color:var(--text);font-weight:500;white-space:nowrap">${escHtml(seg.label)}</div>` +
+      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;margin-left:1rem">${fmt(seg.value)}</div>` +
+      `<div style="font-weight:700;color:var(--text);white-space:nowrap;margin-left:.4rem">${pct}%</div>`;
+    legend.appendChild(row);
+  }
+}
+
+// ── Spending by Mode (bank) donut ────────────────────────────────────────────
+const BANK_COLORS = [
+  '#3b82f6','#f97316','#10b981','#a855f7','#06b6d4',
+  '#f59e0b','#ec4899','#6366f1','#22c55e','#e11d48',
+];
+
+function renderBankChart(data) {
+  const bankSection       = document.getElementById('bank-section');
+  const bankLegendSection = document.getElementById('bank-legend-section');
+
+  if (!data.by_bank || !data.by_bank.length) {
+    bankSection.style.display       = 'none';
+    bankLegendSection.style.display = 'none';
+    return;
+  }
+  bankSection.style.display       = '';
+  bankLegendSection.style.display = '';
+
+  const segments = data.by_bank.map((b, i) => ({
+    label: b.bank,
+    value: b.total,
+    color: BANK_COLORS[i % BANK_COLORS.length],
+  }));
+
+  document.getElementById('bank-donut-val').textContent = fmt(data.total);
+
+  const canvas = document.getElementById('bank-canvas');
+  requestAnimationFrame(() => drawDonut(canvas, segments));
+
+  const legend = document.getElementById('bank-legend');
+  legend.innerHTML = '';
+  for (const seg of segments) {
+    const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.2rem 0';
+    row.innerHTML =
+      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0"></div>` +
+      `<div style="color:var(--text);font-weight:500;white-space:nowrap">${escHtml(seg.label)}</div>` +
+      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;margin-left:1rem">${fmt(seg.value)}</div>` +
+      `<div style="font-weight:700;color:var(--text);white-space:nowrap;margin-left:.4rem">${pct}%</div>`;
     legend.appendChild(row);
   }
 }
@@ -197,6 +268,17 @@ function renderMonthlyChart(data) {
 }
 
 // ── Expenses table ────────────────────────────────────────────────────────────
+function sortExpenses(col) {
+  if (expSortCol === col) {
+    expSortAsc = !expSortAsc;
+  } else {
+    expSortCol = col;
+    expSortAsc = col !== 'date';
+  }
+  expPage = 1;
+  renderExpensesTable(allExpenses);
+}
+
 function renderExpensesTable(expenses) {
   const wrap = document.getElementById('exp-wrap');
   updateSelectionUI();
@@ -206,19 +288,35 @@ function renderExpensesTable(expenses) {
     return;
   }
 
-  const total = expenses.length;
+  // Sort
+  sortedExpenses = [...expenses].sort((a, b) => {
+    let av, bv;
+    if (expSortCol === 'amount') { av = a.amount;      bv = b.amount; }
+    else if (expSortCol === 'category')    { av = a.category.toLowerCase();    bv = b.category.toLowerCase(); }
+    else if (expSortCol === 'description') { av = a.description.toLowerCase(); bv = b.description.toLowerCase(); }
+    else if (expSortCol === 'bank')        { av = (a.bank || '').toLowerCase(); bv = (b.bank || '').toLowerCase(); }
+    else                                   { av = a.date; bv = b.date; }
+    if (av < bv) return expSortAsc ? -1 : 1;
+    if (av > bv) return expSortAsc ? 1 : -1;
+    return 0;
+  });
+
+  const total = sortedExpenses.length;
   const pages = Math.ceil(total / EXP_PAGE_SIZE);
   if (expPage > pages) expPage = pages;
-  const slice = expenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
+  const slice = sortedExpenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
+
+  const arrow = col => expSortCol === col ? (expSortAsc ? ' ↑' : ' ↓') : '';
+  const thStyle = 'cursor:pointer;user-select:none;white-space:nowrap';
 
   let html = `<table>
     <thead><tr>
       <th class="chk"><input type="checkbox" id="chk-all" onchange="toggleAllExpenses(this.checked)"></th>
-      <th style="text-align:left">Date</th>
-      <th style="text-align:left">Category</th>
-      <th>Amount</th>
-      <th style="text-align:left">Description</th>
-      <th style="text-align:left">Bank</th>
+      <th style="text-align:left;${thStyle}" onclick="sortExpenses('date')">Date${arrow('date')}</th>
+      <th style="text-align:left;${thStyle}" onclick="sortExpenses('category')">Category${arrow('category')}</th>
+      <th style="${thStyle}" onclick="sortExpenses('amount')">Amount${arrow('amount')}</th>
+      <th style="text-align:left;${thStyle}" onclick="sortExpenses('description')">Description${arrow('description')}</th>
+      <th style="text-align:left;${thStyle}" onclick="sortExpenses('bank')">Bank${arrow('bank')}</th>
     </tr></thead><tbody>`;
 
   for (const e of slice) {
@@ -259,7 +357,7 @@ function renderExpensesTable(expenses) {
 }
 
 function toggleAllExpenses(checked) {
-  const slice = allExpenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
+  const slice = sortedExpenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
   slice.forEach(e => checked ? selectedIds.add(e.id) : selectedIds.delete(e.id));
   renderExpensesTable(allExpenses);
 }
@@ -268,7 +366,7 @@ function toggleExpenseRow(cb, id) {
   if (cb.checked) selectedIds.add(id); else selectedIds.delete(id);
   cb.closest('tr').classList.toggle('selected', cb.checked);
   updateSelectionUI();
-  const slice   = allExpenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
+  const slice   = sortedExpenses.slice((expPage - 1) * EXP_PAGE_SIZE, expPage * EXP_PAGE_SIZE);
   const allSel  = slice.length > 0 && slice.every(e => selectedIds.has(e.id));
   const chkAll  = document.getElementById('chk-all');
   if (chkAll) chkAll.checked = allSel;
@@ -465,15 +563,19 @@ async function saveAllBudgets() {
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
   const tabs = ['dashboard', 'expenses', 'budget', 'settings', 'data', 'statements'];
+  const mainTabs = ['dashboard', 'expenses', 'budget'];
   for (const t of tabs) {
     const el  = document.getElementById(`tab-${t}`);
     const btn = document.querySelector(`.tab-btn[data-tab="${t}"]`);
     if (el)  el.style.display = t === name ? '' : 'none';
     if (btn) btn.classList.toggle('active', t === name);
   }
+  const tabBar = document.querySelector('.tab-bar');
+  if (tabBar) tabBar.style.display = mainTabs.includes(name) ? '' : 'none';
   if (name === 'dashboard' && summaryData) {
     requestAnimationFrame(() => {
       renderCategoryChart(summaryData);
+      renderBankChart(summaryData);
       renderMonthlyChart(summaryData);
     });
   }
@@ -512,6 +614,20 @@ document.addEventListener('click', closeMenu);
 // ── Export / Import ───────────────────────────────────────────────────────────
 function doExport() {
   window.location.href = '/api/export';
+}
+
+async function clearAllData() {
+  const ok = await askConfirm('Delete ALL expenses and statements? This cannot be undone.');
+  if (!ok) return;
+  const res = await fetch('/api/expenses/all', { method: 'DELETE' });
+  const data = await res.json();
+  allExpenses = [];
+  sortedExpenses = [];
+  selectedIds.clear();
+  expPage = 1;
+  summaryData = null;
+  await Promise.all([loadSummary(), loadExpenses(), loadStatements()]);
+  showToast(`Cleared ${data.deleted} records.`);
 }
 
 async function importFromCSV(input) {
@@ -720,7 +836,8 @@ async function saveStatementRows() {
     closeStatementModal();
     showToast(`Saved ${data.saved} expense${data.saved !== 1 ? 's' : ''}${changedRules.length ? ` · ${changedRules.length} rule${changedRules.length !== 1 ? 's' : ''} learned` : ''}`);
     expPage = 1;
-    await Promise.all([loadSummary(), loadExpenses()]);
+    await Promise.all([loadSummary(), loadExpenses(), loadStatements()]);
+    switchTab('statements');
   } finally {
     setSpinner(false);
   }
@@ -743,30 +860,64 @@ async function loadStatements() {
     wrap.innerHTML = '<div class="empty" style="padding:2rem 1.5rem">No statements uploaded yet.</div>';
     return;
   }
+  const th = (label, align = 'left') =>
+    `<th style="text-align:${align};padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">${label}</th>`;
   let html = `<table style="width:100%;border-collapse:collapse;font-size:.83rem">
     <thead><tr style="background:var(--bg-subtle)">
-      <th style="text-align:left;padding:.5rem 1.25rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">#</th>
-      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Bank</th>
-      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Period</th>
-      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Filename</th>
-      <th style="text-align:right;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Transactions</th>
-      <th style="text-align:right;padding:.5rem 1.25rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Total</th>
-      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Uploaded</th>
+      <th style="padding:.5rem .75rem 0.5rem 1rem;border-bottom:1px solid var(--border);width:32px">
+        <input type="checkbox" id="stmt-chk-all" onchange="toggleAllStatements(this.checked)">
+      </th>
+      ${th('Bank')}${th('Period')}${th('Filename')}${th('Transactions','right')}${th('Total','right')}${th('Uploaded')}
     </tr></thead><tbody>`;
-  stmts.forEach((s, i) => {
+  stmts.forEach(s => {
     const uploadedDate = s.uploaded_at ? s.uploaded_at.slice(0, 10) : '—';
-    html += `<tr style="border-bottom:1px solid var(--border-subtle)">
-      <td style="padding:.6rem 1.25rem;color:var(--text-muted);font-size:.75rem">${stmts.length - i}</td>
+    html += `<tr style="border-bottom:1px solid var(--border-subtle)" data-stmt-id="${escAttr(s.id)}">
+      <td style="padding:.6rem .75rem .6rem 1rem">
+        <input type="checkbox" class="stmt-chk" value="${escAttr(s.id)}" onchange="updateStmtDeleteBtn()">
+      </td>
       <td style="padding:.6rem 1rem;font-weight:600;color:var(--text)">${escHtml(s.bank || '—')}</td>
       <td style="padding:.6rem 1rem;color:var(--text)">${escHtml(s.period || '—')}</td>
-      <td style="padding:.6rem 1rem;color:var(--text-muted);font-size:.75rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.filename || '—')}</td>
+      <td style="padding:.6rem 1rem;color:var(--text-muted);font-size:.75rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.filename || '—')}</td>
       <td style="padding:.6rem 1rem;text-align:right;color:var(--text)">${s.transaction_count}</td>
-      <td style="padding:.6rem 1.25rem;text-align:right;font-weight:700;color:var(--text)">${fmt(s.total_amount)}</td>
+      <td style="padding:.6rem 1rem;text-align:right;font-weight:700;color:var(--text)">${fmt(s.total_amount)}</td>
       <td style="padding:.6rem 1rem;color:var(--text-muted);font-size:.75rem;white-space:nowrap">${escHtml(uploadedDate)}</td>
     </tr>`;
   });
   html += '</tbody></table>';
   wrap.innerHTML = html;
+  updateStmtDeleteBtn();
+}
+
+function toggleAllStatements(checked) {
+  document.querySelectorAll('.stmt-chk').forEach(cb => cb.checked = checked);
+  updateStmtDeleteBtn();
+}
+
+function updateStmtDeleteBtn() {
+  const count = document.querySelectorAll('.stmt-chk:checked').length;
+  const btn   = document.getElementById('stmt-delete-btn');
+  if (!btn) return;
+  btn.disabled = count === 0;
+  btn.textContent = count > 0 ? `Delete (${count})` : 'Delete';
+  // sync select-all checkbox
+  const all = document.querySelectorAll('.stmt-chk');
+  const chkAll = document.getElementById('stmt-chk-all');
+  if (chkAll) chkAll.checked = all.length > 0 && count === all.length;
+}
+
+async function deleteSelectedStatements() {
+  const checked = [...document.querySelectorAll('.stmt-chk:checked')];
+  if (!checked.length) return;
+  const ok = await askConfirm(`Delete ${checked.length} statement${checked.length > 1 ? 's' : ''}? All linked transactions will also be removed.`);
+  if (!ok) return;
+  let totalDeleted = 0;
+  for (const cb of checked) {
+    const res  = await fetch(`/api/statements/${encodeURIComponent(cb.value)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.error) totalDeleted += data.deleted_expenses;
+  }
+  await Promise.all([loadStatements(), loadSummary(), loadExpenses()]);
+  showToast(`${checked.length} statement${checked.length > 1 ? 's' : ''} deleted · ${totalDeleted} transaction${totalDeleted !== 1 ? 's' : ''} removed`);
 }
 
 // ── Category management ───────────────────────────────────────────────────────
@@ -777,7 +928,7 @@ function renderCategoryChips() {
     const color = getCategoryColor(c);
     return `<span style="display:inline-flex;align-items:center;gap:.3rem;padding:.3rem .65rem;border-radius:999px;font-size:.78rem;font-weight:600;background:${color}1a;color:${color};border:1px solid ${color}40">
       ${escHtml(c)}
-      <button onclick="deleteCategory(${JSON.stringify(c)})" title="Remove"
+      <button onclick="deleteCategory(${escAttr(JSON.stringify(c))})" title="Remove"
         style="background:none;border:none;cursor:pointer;color:${color};opacity:.6;font-size:.85rem;line-height:1;padding:0 0 0 .1rem">&times;</button>
     </span>`;
   }).join('');
@@ -885,6 +1036,7 @@ function toggleDarkMode(on) {
   localStorage.setItem('expense_darkmode', on ? '1' : '0');
   if (summaryData) {
     renderCategoryChart(summaryData);
+    renderBankChart(summaryData);
     renderMonthlyChart(summaryData);
   }
 }
@@ -939,18 +1091,84 @@ function drawDonut(canvas, segments) {
   const total = segments.reduce((s, x) => s + x.value, 0);
   if (!total) return;
 
+  // Build arc ranges for hit-testing
+  const arcs = [];
   let angle = -Math.PI / 2;
   for (const seg of segments) {
     const sweep = Math.max(0, (seg.value / total) * 2 * Math.PI - gap);
     if (sweep <= 0) continue;
+    const start = angle + gap / 2;
+    const end   = angle + sweep + gap / 2;
     ctx.beginPath();
-    ctx.arc(cx, cy, R, angle + gap / 2, angle + sweep + gap / 2);
-    ctx.arc(cx, cy, r, angle + sweep + gap / 2, angle + gap / 2, true);
+    ctx.arc(cx, cy, R, start, end);
+    ctx.arc(cx, cy, r, end, start, true);
     ctx.closePath();
     ctx.fillStyle = seg.color;
     ctx.fill();
+    arcs.push({ seg, start, end, R, r });
     angle += sweep + gap;
   }
+
+  // Tooltip on hover
+  canvas._donutArcs = arcs;
+  canvas._donutCx   = cx;
+  canvas._donutCy   = cy;
+  canvas._donutTotal = total;
+  if (!canvas._donutListenerAttached) {
+    canvas._donutListenerAttached = true;
+    canvas.addEventListener('mousemove', _donutMouseMove);
+    canvas.addEventListener('mouseleave', _donutMouseLeave);
+  }
+}
+
+function _donutMouseMove(e) {
+  const rect = this.getBoundingClientRect();
+  const mx   = e.clientX - rect.left;
+  const my   = e.clientY - rect.top;
+  const cx   = this._donutCx, cy = this._donutCy;
+  const dx   = mx - cx, dy = my - cy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const arcs = this._donutArcs || [];
+
+  // Check if inside the ring
+  const inRing = arcs.length && dist >= arcs[0].r && dist <= arcs[0].R;
+  let tip = document.getElementById('donut-tooltip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'donut-tooltip';
+    tip.style.cssText = 'position:absolute;pointer-events:none;background:var(--bg-card);border:1px solid var(--border);border-radius:.4rem;padding:.3rem .65rem;font-size:.75rem;font-weight:600;color:var(--text);box-shadow:0 4px 12px rgba(0,0,0,.15);white-space:nowrap;z-index:50;transition:opacity .1s';
+    document.getElementById('spending-charts-area').appendChild(tip);
+  }
+
+  if (!inRing) { tip.style.opacity = '0'; return; }
+
+  // Normalize cursor angle to [0, 2π) starting from -π/2 (12 o'clock)
+  let a = Math.atan2(dy, dx) + Math.PI / 2;
+  if (a < 0) a += 2 * Math.PI;
+  const hit = arcs.find(arc => {
+    // Normalize arc start/end to same [0, 2π) domain
+    let s = arc.start + Math.PI / 2; if (s < 0) s += 2 * Math.PI;
+    let en = arc.end  + Math.PI / 2; if (en < 0) en += 2 * Math.PI;
+    if (s <= en) return a >= s && a <= en;
+    return a >= s || a <= en; // wraps around 2π
+  });
+
+  if (hit) {
+    const pct = (hit.seg.value / this._donutTotal * 100).toFixed(1);
+    tip.textContent = `${hit.seg.label}  ${fmt(hit.seg.value)}  (${pct}%)`;
+    const area = document.getElementById('spending-charts-area');
+    const aRect = area.getBoundingClientRect();
+    tip.style.left = (e.clientX - aRect.left + 12) + 'px';
+    tip.style.top  = (e.clientY - aRect.top  - 10) + 'px';
+    tip.style.opacity = '1';
+  } else {
+    tip.style.opacity = '0';
+  }
+}
+
+function _donutMouseLeave() {
+  const tip = document.getElementById('donut-tooltip');
+  if (tip) tip.style.opacity = '0';
 }
 
 // ── Canvas: Bar chart ─────────────────────────────────────────────────────────
@@ -1062,9 +1280,14 @@ function escAttr(s) {
   return String(s || '').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+const _OVERFLOW_COLORS = [
+  '#e11d48','#d97706','#0ea5e9','#7c3aed','#0d9488',
+  '#db2777','#65a30d','#2563eb','#9333ea','#0891b2',
+];
 function getCategoryColor(cat) {
   if (CATEGORY_COLORS[cat]) return CATEGORY_COLORS[cat];
+  // Stable index from name hash so the same category always gets the same colour
   let h = 0;
   for (let i = 0; i < cat.length; i++) h = cat.charCodeAt(i) + ((h << 5) - h);
-  return `hsl(${Math.abs(h) % 360}, 55%, 50%)`;
+  return _OVERFLOW_COLORS[Math.abs(h) % _OVERFLOW_COLORS.length];
 }

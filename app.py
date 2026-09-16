@@ -79,6 +79,11 @@ def init_db():
             conn.execute("ALTER TABLE expenses ADD COLUMN bank TEXT DEFAULT ''")
         except Exception:
             pass  # column already exists
+        # Add statement_id column if it doesn't exist yet (migration for existing DBs)
+        try:
+            conn.execute("ALTER TABLE expenses ADD COLUMN statement_id TEXT DEFAULT ''")
+        except Exception:
+            pass  # column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS statements (
                 id                TEXT PRIMARY KEY,
@@ -392,10 +397,13 @@ def _detect_statement_year(lines: list) -> int:
     return current_year
 
 
-def _clamp_year(year: int, ref_year: int) -> int:
+def _clamp_year(year: int, ref_year: int, month: int = 0) -> int:
     """Replace years that don't match the statement period with the statement year.
-    Allows ±1 to handle Dec/Jan cross-year statements."""
-    if abs(year - ref_year) <= 1:
+    Only allows ±1 for Dec/Jan cross-year boundaries; all other months are forced
+    to ref_year so 2-digit years like '25' in an Aug 2026 statement don't misparse."""
+    if year == ref_year:
+        return year
+    if abs(year - ref_year) == 1 and month in (1, 12):
         return year
     return ref_year
 
@@ -417,7 +425,7 @@ def _parse_date_raw(raw: str, ref_year: int):
         month = _MONTH_ABBR.get(mo[:3].lower())
         if month:
             year = ref_year if not yr else (int(yr) + 2000 if int(yr) < 100 else int(yr))
-            year = _clamp_year(year, ref_year)
+            year = _clamp_year(year, ref_year, month)
             try:
                 return datetime(year, month, int(d)).strftime('%Y-%m-%d')
             except ValueError:
@@ -426,7 +434,7 @@ def _parse_date_raw(raw: str, ref_year: int):
     if m:
         d, mo, yr = m.groups()
         yr = int(yr); yr = yr + 2000 if yr < 100 else yr
-        yr = _clamp_year(yr, ref_year)
+        yr = _clamp_year(yr, ref_year, int(mo))
         try:
             return datetime(yr, int(mo), int(d)).strftime('%Y-%m-%d')
         except ValueError:
@@ -649,6 +657,17 @@ def api_delete_expense(record_id):
     return jsonify({"success": True})
 
 
+@app.route("/api/expenses/all", methods=["DELETE"])
+def api_delete_all_expenses():
+    with _write_lock:
+        with get_db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
+            conn.execute("DELETE FROM expenses")
+            conn.execute("DELETE FROM statements")
+            conn.commit()
+    return jsonify({"deleted": count})
+
+
 # ---------------------------------------------------------------------------
 # Budgets
 # ---------------------------------------------------------------------------
@@ -720,6 +739,25 @@ def api_summary():
             (f"{month[:4]}%",),
         ).fetchone()
 
+        # Previous month (safe arithmetic on YYYY-MM string)
+        y, m = int(month[:4]), int(month[5:7])
+        if m == 1:
+            prev_month = f"{y-1}-12"
+        else:
+            prev_month = f"{y}-{m-1:02d}"
+        prev_total = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE date LIKE ?",
+            (f"{prev_month}%",),
+        ).fetchone()
+
+        by_bank = conn.execute(
+            """SELECT COALESCE(NULLIF(TRIM(bank),''), 'Untagged') AS bank,
+                      SUM(amount) AS total
+               FROM expenses WHERE date LIKE ?
+               GROUP BY bank ORDER BY total DESC""",
+            (f"{month}%",),
+        ).fetchall()
+
         budgets = conn.execute("SELECT * FROM budgets").fetchall()
 
     budgets_dict  = {b["category"]: b["monthly_limit"] for b in budgets}
@@ -732,9 +770,11 @@ def api_summary():
     return jsonify({
         "month":          month,
         "total":          month_total["total"],
+        "prev_total":     prev_total["total"],
         "ytd_total":      ytd_total["total"],
         "total_budget":   total_budget,
         "by_category":    by_cat_list,
+        "by_bank":        [dict(r) for r in by_bank],
         "monthly_totals": [dict(r) for r in monthly],
         "budgets":        budgets_dict,
     })
@@ -939,12 +979,13 @@ def api_save_statement():
         if not row.get("date"):
             continue
         expenses.append({
-            "id":          str(uuid.uuid4()),
-            "date":        str(row["date"]).strip(),
-            "amount":      amount,
-            "category":    str(row.get("category") or "Other").strip(),
-            "description": str(row.get("description") or "").strip(),
-            "bank":        bank,
+            "id":           str(uuid.uuid4()),
+            "date":         str(row["date"]).strip(),
+            "amount":       amount,
+            "category":     str(row.get("category") or "Other").strip(),
+            "description":  str(row.get("description") or "").strip(),
+            "bank":         bank,
+            "statement_id": "",  # filled in below once stmt_id is known
         })
 
     if not expenses:
@@ -962,10 +1003,12 @@ def api_save_statement():
              f"{_fmt_period(dates[0])} – {_fmt_period(dates[-1])}"
 
     stmt_id = str(uuid.uuid4())
+    for e in expenses:
+        e["statement_id"] = stmt_id
     with _write_lock:
         with get_db() as conn:
             conn.executemany(
-                "INSERT INTO expenses VALUES (:id,:date,:amount,:category,:description,:bank)",
+                "INSERT INTO expenses VALUES (:id,:date,:amount,:category,:description,:bank,:statement_id)",
                 expenses,
             )
             conn.execute(
@@ -978,6 +1021,20 @@ def api_save_statement():
             conn.commit()
 
     return jsonify({"saved": len(expenses), "statement_id": stmt_id})
+
+
+@app.route("/api/statements/<string:stmt_id>", methods=["DELETE"])
+def api_delete_statement(stmt_id):
+    with _write_lock:
+        with get_db() as conn:
+            result = conn.execute("DELETE FROM statements WHERE id=?", (stmt_id,))
+            if result.rowcount == 0:
+                return jsonify({"error": "Statement not found"}), 404
+            deleted = conn.execute(
+                "DELETE FROM expenses WHERE statement_id=?", (stmt_id,)
+            ).rowcount
+            conn.commit()
+    return jsonify({"deleted_expenses": deleted})
 
 
 if __name__ == "__main__":

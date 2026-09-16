@@ -74,6 +74,22 @@ def init_db():
                 "INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)",
                 [(name, i) for i, name in enumerate(DEFAULT_CATEGORIES)]
             )
+        # Add bank column if it doesn't exist yet (migration for existing DBs)
+        try:
+            conn.execute("ALTER TABLE expenses ADD COLUMN bank TEXT DEFAULT ''")
+        except Exception:
+            pass  # column already exists
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS statements (
+                id                TEXT PRIMARY KEY,
+                bank              TEXT DEFAULT '',
+                filename          TEXT DEFAULT '',
+                period            TEXT DEFAULT '',
+                uploaded_at       TEXT NOT NULL,
+                transaction_count INTEGER DEFAULT 0,
+                total_amount      REAL DEFAULT 0
+            )
+        """)
         conn.commit()
 
 
@@ -453,6 +469,27 @@ def _apply_merchant_rules(transactions: list) -> list:
     return transactions
 
 
+def _detect_bank(lines: list) -> str:
+    text = ' '.join(lines[:40]).lower()
+    if 'citibank' in text or 'citi bank' in text:
+        return 'Citibank'
+    if 'uob' in text or 'united overseas bank' in text:
+        return 'UOB'
+    if 'dbs' in text or 'posb' in text:
+        return 'DBS/POSB'
+    if 'ocbc' in text:
+        return 'OCBC'
+    if 'standard chartered' in text or 'stanchart' in text:
+        return 'Standard Chartered'
+    if 'hsbc' in text:
+        return 'HSBC'
+    if 'maybank' in text:
+        return 'Maybank'
+    if 'american express' in text or 'amex' in text:
+        return 'Amex'
+    return ''
+
+
 def parse_pdf_statement(pdf_bytes: bytes) -> list:
     try:
         import pdfplumber
@@ -474,6 +511,7 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
         )
 
     ref_year = _detect_statement_year(all_lines)
+    bank     = _detect_bank(all_lines)
     results  = []
     for line in all_lines:
         line = line.strip()
@@ -502,6 +540,7 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
             'amount':      amount,
             'description': desc,
             'category':    _guess_category(desc),
+            'bank':        bank,
         })
 
     # Upgrade uncategorized items using Gemini in a single batch call
@@ -558,11 +597,12 @@ def api_add_expense():
         "amount":      amount,
         "category":    str(data["category"]).strip(),
         "description": str(data.get("description") or "").strip(),
+        "bank":        str(data.get("bank") or "").strip(),
     }
     with _write_lock:
         with get_db() as conn:
             conn.execute(
-                "INSERT INTO expenses VALUES (:id, :date, :amount, :category, :description)",
+                "INSERT INTO expenses VALUES (:id, :date, :amount, :category, :description, :bank)",
                 expense,
             )
             conn.commit()
@@ -585,10 +625,11 @@ def api_update_expense(record_id):
     with _write_lock:
         with get_db() as conn:
             result = conn.execute(
-                "UPDATE expenses SET date=?, amount=?, category=?, description=? WHERE id=?",
+                "UPDATE expenses SET date=?, amount=?, category=?, description=?, bank=? WHERE id=?",
                 (str(data["date"]).strip(), amount,
                  str(data["category"]).strip(),
                  str(data.get("description") or "").strip(),
+                 str(data.get("bank") or "").strip(),
                  record_id),
             )
             if result.rowcount == 0:
@@ -866,6 +907,77 @@ def api_parse_statement():
         return jsonify({"error": str(exc)}), 422
     except Exception as exc:
         return jsonify({"error": f"Could not parse PDF: {exc}"}), 500
+
+
+@app.route("/api/statements", methods=["GET"])
+def api_list_statements():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM statements ORDER BY uploaded_at DESC"
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/save-statement", methods=["POST"])
+def api_save_statement():
+    data = request.get_json(force=True) or {}
+    rows     = data.get("rows", [])
+    bank     = str(data.get("bank") or "").strip()
+    filename = str(data.get("filename") or "").strip()
+
+    if not rows:
+        return jsonify({"error": "No rows to save"}), 400
+
+    expenses = []
+    for row in rows:
+        try:
+            amount = round(float(row["amount"]), 2)
+            if amount <= 0:
+                continue
+        except (ValueError, TypeError):
+            continue
+        if not row.get("date"):
+            continue
+        expenses.append({
+            "id":          str(uuid.uuid4()),
+            "date":        str(row["date"]).strip(),
+            "amount":      amount,
+            "category":    str(row.get("category") or "Other").strip(),
+            "description": str(row.get("description") or "").strip(),
+            "bank":        bank,
+        })
+
+    if not expenses:
+        return jsonify({"error": "No valid rows"}), 400
+
+    # Derive period from date range of transactions
+    dates = sorted(e["date"] for e in expenses)
+    def _fmt_period(d):
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            return dt.strftime("%b %Y")
+        except ValueError:
+            return d
+    period = _fmt_period(dates[0]) if dates[0][:7] == dates[-1][:7] else \
+             f"{_fmt_period(dates[0])} – {_fmt_period(dates[-1])}"
+
+    stmt_id = str(uuid.uuid4())
+    with _write_lock:
+        with get_db() as conn:
+            conn.executemany(
+                "INSERT INTO expenses VALUES (:id,:date,:amount,:category,:description,:bank)",
+                expenses,
+            )
+            conn.execute(
+                "INSERT INTO statements VALUES (?,?,?,?,?,?,?)",
+                (stmt_id, bank, filename, period,
+                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                 len(expenses),
+                 round(sum(e["amount"] for e in expenses), 2)),
+            )
+            conn.commit()
+
+    return jsonify({"saved": len(expenses), "statement_id": stmt_id})
 
 
 if __name__ == "__main__":

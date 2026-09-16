@@ -20,6 +20,9 @@
     <div class="menu-wrap">
       <button class="menu-btn" onclick="toggleMenu(event)">Menu <span style="font-size:.6em;vertical-align:middle">&#9660;</span></button>
       <div class="menu-dropdown" id="app-menu">
+        <button class="menu-item" onclick="closeMenu();switchTab('statements')">
+          <span class="menu-item-icon">&#128200;</span> Statements
+        </button>
         <button class="menu-item" onclick="closeMenu();switchTab('data')">
           <span class="menu-item-icon">&#128196;</span> Data
         </button>
@@ -77,15 +80,15 @@
       </div>
       <div id="cat-chart-empty" class="empty">No expenses recorded for this month.</div>
       <div id="cat-chart-area" style="display:none;padding:1.25rem 1.5rem 1.5rem">
-        <div style="display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;justify-content:center">
-          <div style="position:relative;width:200px;height:200px;flex-shrink:0">
-            <canvas id="cat-canvas" width="200" height="200" style="display:block"></canvas>
-            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none">
-              <div id="donut-label-val" style="font-size:.95rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
-              <div id="donut-label-sub" style="font-size:.65rem;color:var(--text-muted);margin-top:.15rem">total</div>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem">
+          <div style="position:relative;width:190px;height:190px;flex-shrink:0">
+            <canvas id="cat-canvas" width="190" height="190" style="display:block"></canvas>
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
+              <div id="donut-label-sub" style="font-size:.6rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
+              <div id="donut-label-val" style="font-size:1rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
             </div>
           </div>
-          <div id="cat-legend" style="display:flex;flex-direction:column;gap:.55rem;min-width:220px;max-width:320px;flex:1"></div>
+          <div id="cat-legend" style="display:flex;flex-direction:column;gap:.45rem;width:100%;max-width:360px"></div>
         </div>
       </div>
     </div>
@@ -135,6 +138,10 @@
           <div class="fg">
             <label for="f-desc">Description</label>
             <input id="f-desc" type="text" placeholder="Optional notes…" />
+          </div>
+          <div class="fg">
+            <label for="f-bank">Bank</label>
+            <input id="f-bank" type="text" placeholder="e.g. DBS, UOB…" />
           </div>
           <div style="display:flex;flex-direction:column;gap:.4rem;justify-content:flex-end">
             <button class="btn btn-primary" id="submit-btn" onclick="submitExpense()">Add</button>
@@ -228,6 +235,19 @@
       </div>
     </div>
   </div><!-- end #tab-settings -->
+
+  <!-- ── Statements tab ── -->
+  <div id="tab-statements" style="display:none">
+    <div class="card" style="max-width:860px">
+      <div class="card-header">
+        <span class="card-title">Uploaded Statements</span>
+        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">History of all imported PDF statements</span>
+      </div>
+      <div id="statements-wrap" style="padding:.25rem 0">
+        <div class="empty" style="padding:2rem 1.5rem">No statements uploaded yet.</div>
+      </div>
+    </div>
+  </div><!-- end #tab-statements -->
 
   <!-- ── Data tab ── -->
   <div id="tab-data" style="display:none">

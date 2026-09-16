@@ -15,7 +15,9 @@ const CATEGORY_COLORS = {
 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let currentMonth  = new Date().toISOString().slice(0, 7);
+const _now = new Date();
+const _prev = new Date(_now.getFullYear(), _now.getMonth() - 1, 1);
+let currentMonth  = `${_prev.getFullYear()}-${String(_prev.getMonth() + 1).padStart(2, '0')}`;
 let summaryData   = null;
 let allExpenses   = [];
 let categories    = [];
@@ -24,6 +26,7 @@ let selectedIds   = new Set();
 let confirmResolve = null;
 let expPage       = 1;
 let stmtRows      = [];
+let stmtFilename  = '';
 const EXP_PAGE_SIZE = 25;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -166,12 +169,12 @@ function renderCategoryChart(data) {
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
     const row = document.createElement('div');
-    row.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;align-items:center;gap:.5rem;font-size:.8rem';
+    row.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;align-items:center;gap:.6rem;font-size:.82rem;padding:.2rem 0';
     row.innerHTML =
       `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0"></div>` +
       `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.72rem;white-space:nowrap">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;min-width:44px;text-align:right">${pct}%</div>`;
+      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
+      `<div style="font-weight:700;min-width:46px;text-align:right;color:var(--text)">${pct}%</div>`;
     legend.appendChild(row);
   }
 }
@@ -215,6 +218,7 @@ function renderExpensesTable(expenses) {
       <th style="text-align:left">Category</th>
       <th>Amount</th>
       <th style="text-align:left">Description</th>
+      <th style="text-align:left">Bank</th>
     </tr></thead><tbody>`;
 
   for (const e of slice) {
@@ -226,9 +230,15 @@ function renderExpensesTable(expenses) {
       <td><span class="cat-chip" style="background:${color}1a;color:${color};border-color:${color}40">${escHtml(e.category)}</span></td>
       <td>${fmt(e.amount)}</td>
       <td style="color:var(--text-muted)">${escHtml(e.description)}</td>
+      <td style="color:var(--text-muted);font-size:.78rem;white-space:nowrap">${escHtml(e.bank || '—')}</td>
     </tr>`;
   }
   html += '</tbody></table>';
+  const monthTotal = expenses.reduce((s, e) => s + e.amount, 0);
+  html += `<div style="display:flex;justify-content:flex-end;align-items:center;gap:1rem;padding:.6rem 1rem;border-top:2px solid var(--border);font-size:.83rem">
+    <span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-size:.72rem">Month Total</span>
+    <span style="font-weight:700;color:var(--text)">${fmt(monthTotal)}</span>
+  </div>`;
 
   if (pages > 1) {
     html += '<div class="pagination">';
@@ -285,13 +295,14 @@ async function submitExpense() {
   const category = document.getElementById('f-category').value;
   const amount   = document.getElementById('f-amount').value;
   const desc     = document.getElementById('f-desc').value;
+  const bank     = document.getElementById('f-bank').value.trim();
 
   if (!date || !category || !amount) {
     showToast('Please fill in Date, Category, and Amount', 'error');
     return;
   }
 
-  const body = { date, category, amount: parseFloat(amount), description: desc };
+  const body = { date, category, amount: parseFloat(amount), description: desc, bank };
 
   if (editingId) {
     const res  = await fetch(`/api/expense/${editingId}`, {
@@ -314,6 +325,7 @@ async function submitExpense() {
     showToast('Expense added');
     document.getElementById('f-amount').value = '';
     document.getElementById('f-desc').value   = '';
+    document.getElementById('f-bank').value   = '';
   }
 
   expPage = 1;
@@ -331,6 +343,7 @@ function startEdit() {
   document.getElementById('f-category').value = exp.category;
   document.getElementById('f-amount').value   = exp.amount;
   document.getElementById('f-desc').value     = exp.description;
+  document.getElementById('f-bank').value     = exp.bank || '';
 
   document.getElementById('submit-btn').textContent = 'Update';
   document.getElementById('cancel-btn').style.display = '';
@@ -345,6 +358,7 @@ function cancelEdit() {
   document.getElementById('expense-card').classList.remove('editing');
   document.getElementById('f-amount').value = '';
   document.getElementById('f-desc').value   = '';
+  document.getElementById('f-bank').value   = '';
   setDefaultDate();
   selectedIds.clear();
   updateSelectionUI();
@@ -450,7 +464,7 @@ async function saveAllBudgets() {
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
-  const tabs = ['dashboard', 'expenses', 'budget', 'settings', 'data'];
+  const tabs = ['dashboard', 'expenses', 'budget', 'settings', 'data', 'statements'];
   for (const t of tabs) {
     const el  = document.getElementById(`tab-${t}`);
     const btn = document.querySelector(`.tab-btn[data-tab="${t}"]`);
@@ -465,6 +479,9 @@ function switchTab(name) {
   }
   if (name === 'budget' && summaryData) {
     renderBudgetTab(summaryData);
+  }
+  if (name === 'statements') {
+    loadStatements();
   }
   if (name === 'settings') {
     renderCategoryChips();
@@ -527,6 +544,7 @@ async function importFromCSV(input) {
 async function uploadStatement(input) {
   const file = input.files[0];
   if (!file) return;
+  stmtFilename = file.name;
   input.value = '';
 
   const form = new FormData();
@@ -574,6 +592,7 @@ function renderStmtModal() {
       <th style="width:100%">Description</th>
       <th style="text-align:right">Amount (S$)</th>
       <th>Category</th>
+      <th>Bank</th>
       <th></th>
     </tr></thead><tbody>`;
 
@@ -607,6 +626,7 @@ function renderStmtModal() {
           ${catOpts}
         </select>
       </td>
+      <td style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;padding:.4rem .6rem">${escHtml(row.bank || '—')}</td>
       <td>
         <button class="btn btn-del" onclick="removeStmtRow(${row._id})"
           style="padding:.18rem .4rem;font-size:.68rem;line-height:1.4">&#x2715;</button>
@@ -673,17 +693,17 @@ async function saveStatementRows() {
     return;
   }
 
+  const bank = toSave[0]?.bank || '';
+
   setSpinner(true);
   try {
-    const results = await Promise.all(toSave.map(row =>
-      fetch('/api/expense', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ date: row.date, amount: row.amount, category: row.category, description: row.description }),
-      }).then(r => r.json())
-    ));
-    const saved  = results.filter(r => r.success).length;
-    const failed = results.length - saved;
+    const res  = await fetch('/api/save-statement', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ rows: toSave, bank, filename: stmtFilename }),
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
 
     // Auto-save merchant rules for any rows where the user changed the category
     const changedRules = toSave.filter(r => r.category !== r._origCategory);
@@ -698,7 +718,7 @@ async function saveStatementRows() {
     }
 
     closeStatementModal();
-    showToast(`Saved ${saved} expense${saved !== 1 ? 's' : ''}${failed ? ` (${failed} failed)` : ''}${changedRules.length ? ` · ${changedRules.length} rule${changedRules.length !== 1 ? 's' : ''} learned` : ''}`);
+    showToast(`Saved ${data.saved} expense${data.saved !== 1 ? 's' : ''}${changedRules.length ? ` · ${changedRules.length} rule${changedRules.length !== 1 ? 's' : ''} learned` : ''}`);
     expPage = 1;
     await Promise.all([loadSummary(), loadExpenses()]);
   } finally {
@@ -713,6 +733,42 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Merchant rules ────────────────────────────────────────────────────────────
+// ── Statements history ────────────────────────────────────────────────────────
+async function loadStatements() {
+  const wrap = document.getElementById('statements-wrap');
+  if (!wrap) return;
+  const res   = await fetch('/api/statements');
+  const stmts = await res.json();
+  if (!stmts.length) {
+    wrap.innerHTML = '<div class="empty" style="padding:2rem 1.5rem">No statements uploaded yet.</div>';
+    return;
+  }
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:.83rem">
+    <thead><tr style="background:var(--bg-subtle)">
+      <th style="text-align:left;padding:.5rem 1.25rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">#</th>
+      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Bank</th>
+      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Period</th>
+      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Filename</th>
+      <th style="text-align:right;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Transactions</th>
+      <th style="text-align:right;padding:.5rem 1.25rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Total</th>
+      <th style="text-align:left;padding:.5rem 1rem;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);border-bottom:1px solid var(--border)">Uploaded</th>
+    </tr></thead><tbody>`;
+  stmts.forEach((s, i) => {
+    const uploadedDate = s.uploaded_at ? s.uploaded_at.slice(0, 10) : '—';
+    html += `<tr style="border-bottom:1px solid var(--border-subtle)">
+      <td style="padding:.6rem 1.25rem;color:var(--text-muted);font-size:.75rem">${stmts.length - i}</td>
+      <td style="padding:.6rem 1rem;font-weight:600;color:var(--text)">${escHtml(s.bank || '—')}</td>
+      <td style="padding:.6rem 1rem;color:var(--text)">${escHtml(s.period || '—')}</td>
+      <td style="padding:.6rem 1rem;color:var(--text-muted);font-size:.75rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(s.filename || '—')}</td>
+      <td style="padding:.6rem 1rem;text-align:right;color:var(--text)">${s.transaction_count}</td>
+      <td style="padding:.6rem 1.25rem;text-align:right;font-weight:700;color:var(--text)">${fmt(s.total_amount)}</td>
+      <td style="padding:.6rem 1rem;color:var(--text-muted);font-size:.75rem;white-space:nowrap">${escHtml(uploadedDate)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
 // ── Category management ───────────────────────────────────────────────────────
 function renderCategoryChips() {
   const wrap = document.getElementById('category-chips');
@@ -866,9 +922,11 @@ function resolveConfirm(val) {
 // ── Canvas: Donut chart ───────────────────────────────────────────────────────
 function drawDonut(canvas, segments) {
   const dpr  = window.devicePixelRatio || 1;
-  const size = canvas.offsetWidth || 200;
+  const size = canvas.offsetWidth || 190;
   canvas.width  = size * dpr;
   canvas.height = size * dpr;
+  canvas.style.width  = size + 'px';
+  canvas.style.height = size + 'px';
 
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);

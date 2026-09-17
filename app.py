@@ -115,10 +115,15 @@ _SKIP_PHRASES = [
     'credit limit','available credit','finance charge',
     'late charge','late payment fee','annual fee',
     'bill payment','giro payment','inter-bank transfer',
-    'fund transfer','paynow','fast payment','bill pay',
+    'fund transfer','paynow transfer','paynow to ','fast payment to ','bill pay',
     'interest charge','gst charged','brought forward',
     'carried forward','total amount due','amount due',
     'statement date','account number',
+    # PayLah! / DBS wallet transfers (not real expenses)
+    'top up wallet','send money to','receive money from',
+    'ref no:',
+    # Trust Bank / generic summary lines
+    'total outstanding balance','outstanding balance',
 ]
 
 _CATEGORY_KEYWORDS = {
@@ -455,8 +460,20 @@ _DATE_PART = (
     r'|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}'
     r'|\d{1,2}/\d{1,2})'
 )
+_DEBIT_CREDIT_SUFFIX = r'(?:CR|DB|Dr|Cr|DB\.)?\s*'
 _LINE_RE = re.compile(
-    r'^(' + _DATE_PART + r')\s+(.+?)\s+([\d,]+\.\d{2})\s*(?:CR|Dr|Cr)?\s*$',
+    r'^(' + _DATE_PART + r')\s+(.+?)\s+([\d,]+\.\d{2})\s*' + _DEBIT_CREDIT_SUFFIX + r'$',
+    re.IGNORECASE,
+)
+# DBS/POSB savings: date  description  withdrawal  [deposit]  balance
+_LINE_RE_WITH_BALANCE = re.compile(
+    r'^(' + _DATE_PART + r')\s+(.+?)\s+([\d,]+\.\d{2})\s+[\d,]+\.\d{2}\s*$',
+    re.IGNORECASE,
+)
+# Two-date format (Trust/DBS credit card): PostDate  TransDate  description  amount
+# Capture the SECOND date (transaction date) as group 1.
+_LINE_RE_TWO_DATES = re.compile(
+    r'^' + _DATE_PART + r'\s+(' + _DATE_PART + r')\s+(.+?)\s+([\d,]+\.\d{2})\s*' + _DEBIT_CREDIT_SUFFIX + r'$',
     re.IGNORECASE,
 )
 
@@ -483,6 +500,8 @@ def _detect_bank(lines: list) -> str:
         return 'Citibank'
     if 'uob' in text or 'united overseas bank' in text:
         return 'UOB'
+    if 'trust bank' in text or ('trust' in text and 'bank' in text):
+        return 'Trust'
     if 'dbs' in text or 'posb' in text:
         return 'DBS/POSB'
     if 'ocbc' in text:
@@ -520,15 +539,65 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
 
     ref_year = _detect_statement_year(all_lines)
     bank     = _detect_bank(all_lines)
+
+    _has_date   = re.compile(r'^\s*' + _DATE_PART, re.IGNORECASE)
+    _has_amount = re.compile(r'[\d,]+\.\d{2}')
+    # Pre-processing pass: handle multi-line transaction formats.
+    # Trust Bank places the merchant name on the line BEFORE the date+amount line.
+    # Pattern: [desc-only line] → [date + amount, no description] → [optional city line]
+    # Strategy: when a date+amount line has nothing between the last date and the amount,
+    # look back at the previous non-empty line for the description.
+    processed = []
+    for raw_ln in all_lines:
+        ln = raw_ln.strip()
+        if not ln:
+            processed.append(ln)
+            continue
+        # Detect "date(s) then immediately amount" — no merchant description
+        m_bare = re.match(
+            r'^(' + _DATE_PART + r'(?:\s+' + _DATE_PART + r')?)\s+([\d,]+\.\d{2}\s*(?:CR|DB|Dr|Cr)?\s*)$',
+            ln, re.IGNORECASE
+        )
+        if m_bare:
+            # Find the last non-empty preceding line as the description
+            for prev in reversed(processed):
+                if prev.strip() and not _has_date.match(prev) and not _has_amount.search(prev):
+                    desc_part = prev.strip()
+                    processed.append(m_bare.group(1) + ' ' + desc_part + ' ' + m_bare.group(2))
+                    break
+            else:
+                processed.append(ln)
+            continue
+        processed.append(ln)
+    all_lines = processed
     results  = []
     for line in all_lines:
         line = line.strip()
         if len(line) < 10:
             continue
         m = _LINE_RE.match(line)
-        if not m:
+        if m:
+            date_raw, desc, amount_raw = m.group(1).strip(), m.group(2).strip(), m.group(3)
+        else:
+            # Try two-date format (DBS credit card: PostDate TransDate description amount)
+            m2 = _LINE_RE_TWO_DATES.match(line)
+            if m2:
+                date_raw, desc, amount_raw = m2.group(1).strip(), m2.group(2).strip(), m2.group(3)
+            else:
+                # Try balance-column format (DBS/POSB savings: date desc amount balance)
+                m3 = _LINE_RE_WITH_BALANCE.match(line)
+                if not m3:
+                    continue
+                date_raw, desc, amount_raw = m3.group(1).strip(), m3.group(2).strip(), m3.group(3)
+        # Strip any leading residual date token from description (two-date lines)
+        desc = re.sub(r'^\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s*', '', desc, flags=re.IGNORECASE).strip()
+        # Strip leading standalone month name (Trust Bank column layout bleeds month into desc)
+        desc = re.sub(r'^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+', '', desc, flags=re.IGNORECASE).strip()
+        # Strip trailing payment-channel tags Trust Bank appends (e.g. "TOWKAY KIA KOPI PTE LTD PAYNOW")
+        desc = re.sub(r'\s+PAYNOW\s*$', '', desc, flags=re.IGNORECASE).strip()
+        # Skip if description is nothing but a month name after cleanup
+        if re.fullmatch(r'(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*', desc, re.IGNORECASE):
             continue
-        date_raw, desc, amount_raw = m.group(1).strip(), m.group(2).strip(), m.group(3)
         # Skip credits: CR can appear as "1,234.56 CR" or "1,234.56CR" (no word boundary)
         if re.search(r'CR\s*$', line, re.IGNORECASE):
             continue
@@ -558,7 +627,7 @@ def parse_pdf_statement(pdf_bytes: bytes) -> list:
         for i, cat in zip(other_indices, ai_cats):
             results[i]['category'] = cat
 
-    return results
+    return results, all_lines
 
 
 @app.route("/")
@@ -750,6 +819,12 @@ def api_summary():
             (f"{prev_month}%",),
         ).fetchone()
 
+        prev_by_category = conn.execute(
+            """SELECT category, SUM(amount) AS total
+               FROM expenses WHERE date LIKE ? GROUP BY category""",
+            (f"{prev_month}%",),
+        ).fetchall()
+
         by_bank = conn.execute(
             """SELECT COALESCE(NULLIF(TRIM(bank),''), 'Untagged') AS bank,
                       SUM(amount) AS total
@@ -757,6 +832,13 @@ def api_summary():
                GROUP BY bank ORDER BY total DESC""",
             (f"{month}%",),
         ).fetchall()
+
+        top_merchant = conn.execute(
+            """SELECT description, SUM(amount) AS total, COUNT(*) AS visits
+               FROM expenses WHERE date LIKE ?
+               GROUP BY LOWER(description) ORDER BY total DESC LIMIT 1""",
+            (f"{month}%",),
+        ).fetchone()
 
         budgets = conn.execute("SELECT * FROM budgets").fetchall()
 
@@ -773,10 +855,12 @@ def api_summary():
         "prev_total":     prev_total["total"],
         "ytd_total":      ytd_total["total"],
         "total_budget":   total_budget,
-        "by_category":    by_cat_list,
-        "by_bank":        [dict(r) for r in by_bank],
+        "by_category":      by_cat_list,
+        "prev_by_category": [dict(r) for r in prev_by_category],
+        "by_bank":          [dict(r) for r in by_bank],
         "monthly_totals": [dict(r) for r in monthly],
         "budgets":        budgets_dict,
+        "top_merchant":   dict(top_merchant) if top_merchant and top_merchant["total"] else None,
     })
 
 
@@ -940,9 +1024,11 @@ def api_parse_statement():
     if not f.filename.lower().endswith(".pdf"):
         return jsonify({"error": "Only PDF files are supported"}), 400
     try:
-        txns = parse_pdf_statement(f.read())
+        pdf_bytes = f.read()
+        txns, raw_lines = parse_pdf_statement(pdf_bytes)
         txns = _apply_merchant_rules(txns)
-        return jsonify({"transactions": txns})
+        resp = {"transactions": txns, "raw_sample": raw_lines[:80]}
+        return jsonify(resp)
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 422
     except Exception as exc:

@@ -60,6 +60,11 @@
       <div class="sub" id="s-top-cat-amt">—</div>
     </div>
     <div class="summary-card">
+      <div class="lbl">Top Merchant</div>
+      <div class="val" id="s-top-merchant" style="font-size:1.1rem">—</div>
+      <div class="sub" id="s-top-merchant-sub">—</div>
+    </div>
+    <div class="summary-card">
       <div class="lbl">YTD Total</div>
       <div class="val" id="s-ytd">—</div>
     </div>
@@ -74,54 +79,71 @@
   <!-- ── Dashboard tab ── -->
   <div id="tab-dashboard">
 
-    <div class="card">
+    <div style="display:flex;gap:1rem;align-items:flex-start">
+
+    <div class="card" style="flex:1;min-width:0">
       <div class="card-header">
         <span class="card-title">Spending Overview</span>
         <span id="cat-chart-month" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
       </div>
       <div id="spending-charts-empty" class="empty">No expenses recorded for this month.</div>
       <div id="spending-charts-area" style="display:none;padding:1.25rem 1.5rem 1.5rem;position:relative">
-        <div style="display:flex;gap:1.75rem;align-items:flex-start">
+        <div style="display:grid;grid-template-columns:160px 1fr;gap:1.25rem 1.75rem;align-items:start">
 
-          <!-- Left: two donuts stacked -->
-          <div style="display:flex;flex-direction:column;gap:1.5rem;flex-shrink:0">
-            <div>
-              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Category</div>
-              <div style="position:relative;width:160px;height:160px">
-                <canvas id="cat-canvas" width="160" height="160" style="display:block"></canvas>
-                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
-                  <div id="donut-label-sub" style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
-                  <div id="donut-label-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
-                </div>
-              </div>
-            </div>
-            <div id="bank-section" style="display:none">
-              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Mode</div>
-              <div style="position:relative;width:160px;height:160px">
-                <canvas id="bank-canvas" width="160" height="160" style="display:block"></canvas>
-                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
-                  <div style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
-                  <div id="bank-donut-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
-                </div>
+          <!-- Row 1 left: category donut -->
+          <div>
+            <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Category</div>
+            <div style="position:relative;width:160px;height:160px">
+              <canvas id="cat-canvas" width="160" height="160" style="display:block"></canvas>
+              <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
+                <div id="donut-label-sub" style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
+                <div id="donut-label-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
               </div>
             </div>
           </div>
 
-          <!-- Right: both legends -->
-          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1.25rem">
-            <div>
-              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Category</div>
-              <div id="cat-legend" style="display:flex;flex-direction:column;gap:.4rem"></div>
+          <!-- Row 1 right: category legend -->
+          <div style="padding-top:1.4rem">
+            <div id="cat-legend"></div>
+          </div>
+
+          <!-- Row 2 left: bank donut -->
+          <div id="bank-section" style="display:none">
+            <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Mode</div>
+            <div style="position:relative;width:160px;height:160px">
+              <canvas id="bank-canvas" width="160" height="160" style="display:block"></canvas>
+              <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;gap:.15rem">
+                <div style="font-size:.55rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted)">total</div>
+                <div id="bank-donut-val" style="font-size:.9rem;font-weight:700;color:var(--text);line-height:1.2">—</div>
+              </div>
             </div>
-            <div id="bank-legend-section" style="display:none">
-              <div style="font-size:.65rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.5rem">By Mode</div>
-              <div id="bank-legend" style="display:flex;flex-direction:column;gap:.4rem"></div>
-            </div>
+          </div>
+
+          <!-- Row 2 right: bank legend -->
+          <div id="bank-legend-section" style="display:none;padding-top:1.4rem">
+            <div id="bank-legend"></div>
           </div>
 
         </div>
       </div>
     </div>
+
+    <!-- Category vs Last Month chart -->
+    <div class="card" style="flex:1;min-width:0">
+      <div class="card-header">
+        <span class="card-title">vs Last Month</span>
+      </div>
+      <div id="cat-trend-empty" class="empty">No data to compare.</div>
+      <div id="cat-trend-area" style="display:none;padding:1rem 1.25rem 1.25rem">
+        <div style="display:flex;gap:1rem;font-size:.7rem;color:var(--text-muted);margin-bottom:.75rem;align-items:center">
+          <span style="display:flex;align-items:center;gap:.35rem"><span style="display:inline-block;width:12px;height:8px;border-radius:2px;background:var(--accent)"></span>This month</span>
+          <span style="display:flex;align-items:center;gap:.35rem"><span id="cat-trend-legend-prev" style="display:inline-block;width:12px;height:8px;border-radius:2px;background:#94a3b8;opacity:.45"></span>Last month</span>
+        </div>
+        <canvas id="cat-trend-canvas" style="display:block;width:100%"></canvas>
+      </div>
+    </div>
+
+    </div><!-- end side-by-side row -->
 
     <div class="card">
       <div class="card-header">
@@ -192,14 +214,19 @@
     <div class="card">
       <div class="card-header">
         <span class="card-title">Monthly Budgets</span>
-        <span style="font-size:.78rem;color:var(--text-muted);margin-left:auto">Limits apply per calendar month</span>
+        <span id="budget-status" style="font-size:.8rem;color:#16a34a;margin-left:auto;display:none">Saved</span>
       </div>
       <div style="padding:1rem 1.5rem 1.5rem">
-        <p style="font-size:.82rem;color:var(--text-muted);margin-bottom:1.1rem">Set a monthly spending limit per category. Leave blank or enter 0 to remove the limit.</p>
         <div id="budget-grid"></div>
-        <div style="margin-top:1.25rem;display:flex;gap:.75rem;align-items:center">
-          <button class="btn btn-primary" onclick="saveAllBudgets()">Save Budgets</button>
-          <span id="budget-status" style="font-size:.82rem;color:#16a34a;display:none">Saved.</span>
+
+        <!-- Add category row -->
+        <div id="budget-add-row" style="display:flex;align-items:center;gap:.75rem;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)">
+          <select id="budget-add-cat" style="flex:1;padding:.35rem .6rem;border:1px solid var(--border);border-radius:6px;font-size:.83rem;background:var(--input-bg);color:var(--text);outline:none;font-family:inherit">
+            <option value="">Select category…</option>
+          </select>
+          <input id="budget-add-limit" type="number" min="0" step="0.01" placeholder="Monthly limit"
+            style="width:130px;padding:.35rem .5rem;border:1px solid var(--border);border-radius:6px;font-size:.83rem;text-align:right;background:var(--input-bg);color:var(--text);outline:none;font-family:inherit">
+          <button class="btn btn-primary" style="white-space:nowrap;padding:.35rem .9rem;font-size:.83rem" onclick="addBudgetCategory()">+ Add</button>
         </div>
       </div>
     </div>

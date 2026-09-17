@@ -69,6 +69,7 @@ async function loadSummary() {
     renderSummaryStrip(summaryData);
     renderCategoryChart(summaryData);
     renderBankChart(summaryData);
+    renderCategoryTrendChart(summaryData);
     renderMonthlyChart(summaryData);
     const budgetTab = document.getElementById('tab-budget');
     if (budgetTab && budgetTab.style.display !== 'none') {
@@ -155,6 +156,17 @@ function renderSummaryStrip(data) {
     topCatAmtEl.textContent = '';
   }
 
+  const topMerchantEl    = document.getElementById('s-top-merchant');
+  const topMerchantSubEl = document.getElementById('s-top-merchant-sub');
+  if (data.top_merchant) {
+    const m = data.top_merchant;
+    topMerchantEl.textContent    = m.description;
+    topMerchantSubEl.textContent = `${fmt(m.total)} · ${m.visits}×`;
+  } else {
+    topMerchantEl.textContent    = '—';
+    topMerchantSubEl.textContent = '—';
+  }
+
   document.getElementById('s-ytd').textContent = fmt(data.ytd_total);
 }
 
@@ -193,16 +205,15 @@ function renderCategoryChart(data) {
 
   const legend = document.getElementById('cat-legend');
   legend.innerHTML = '';
+  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.35rem;align-items:center;font-size:.82rem';
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.2rem 0';
-    row.innerHTML =
-      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0"></div>` +
-      `<div style="color:var(--text);font-weight:500;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;margin-left:1rem">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;color:var(--text);white-space:nowrap;margin-left:.4rem">${pct}%</div>`;
-    legend.appendChild(row);
+    legend.insertAdjacentHTML('beforeend',
+      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
+      `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
+      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
+      `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>`
+    );
   }
 }
 
@@ -237,17 +248,105 @@ function renderBankChart(data) {
 
   const legend = document.getElementById('bank-legend');
   legend.innerHTML = '';
+  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.35rem;align-items:center;font-size:.82rem';
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.2rem 0';
-    row.innerHTML =
-      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color};flex-shrink:0"></div>` +
-      `<div style="color:var(--text);font-weight:500;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;margin-left:1rem">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;color:var(--text);white-space:nowrap;margin-left:.4rem">${pct}%</div>`;
-    legend.appendChild(row);
+    legend.insertAdjacentHTML('beforeend',
+      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
+      `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
+      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
+      `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>`
+    );
   }
+}
+
+// ── Category vs Last Month chart ─────────────────────────────────────────────
+function renderCategoryTrendChart(data) {
+  const area  = document.getElementById('cat-trend-area');
+  const empty = document.getElementById('cat-trend-empty');
+  const curr  = data.by_category || [];
+  const prev  = data.prev_by_category || [];
+
+  if (!curr.length) {
+    area.style.display  = 'none';
+    empty.style.display = '';
+    return;
+  }
+  area.style.display  = '';
+  empty.style.display = 'none';
+
+  const prevMap = Object.fromEntries(prev.map(c => [c.category, c.total]));
+  const cats = curr.map(c => ({
+    name:  c.category,
+    curr:  c.total,
+    prev:  prevMap[c.category] ?? 0,
+    color: getCategoryColor(c.category),
+  }));
+
+  const canvas = document.getElementById('cat-trend-canvas');
+  const dpr    = window.devicePixelRatio || 1;
+  const W      = canvas.parentElement.clientWidth || 300;
+  const labelW = 82;
+  const deltaW = 52;
+  const barAreaW = W - labelW - deltaW;
+  const rowH   = 30;
+  const barH   = 8;
+  const gap    = 4;
+  const H      = cats.length * rowH + 8;
+
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+
+  const isDark   = document.body.classList.contains('dark');
+  const textCol  = isDark ? '#e2e8f0' : '#1e293b';
+  const mutedCol = isDark ? '#64748b' : '#94a3b8';
+  const maxVal   = Math.max(...cats.flatMap(c => [c.curr, c.prev]), 1);
+
+  cats.forEach((cat, i) => {
+    const y = i * rowH + 4;
+
+    // Category label
+    ctx.fillStyle  = textCol;
+    ctx.font       = '11px system-ui, sans-serif';
+    ctx.textAlign  = 'right';
+    ctx.textBaseline = 'middle';
+    const label = cat.name.length > 11 ? cat.name.slice(0, 10) + '…' : cat.name;
+    ctx.fillText(label, labelW - 6, y + barH + gap / 2);
+
+    // Current month bar
+    const currW = (cat.curr / maxVal) * barAreaW;
+    ctx.fillStyle = cat.color;
+    ctx.beginPath();
+    ctx.roundRect(labelW, y, Math.max(currW, 2), barH, 2);
+    ctx.fill();
+
+    // Previous month bar
+    const prevW = (cat.prev / maxVal) * barAreaW;
+    ctx.fillStyle = cat.color + '55';
+    ctx.beginPath();
+    ctx.roundRect(labelW, y + barH + gap, Math.max(prevW, cat.prev > 0 ? 2 : 0), barH, 2);
+    ctx.fill();
+
+    // Delta text on the right
+    const delta = cat.curr - cat.prev;
+    const pct   = cat.prev > 0 ? Math.round(Math.abs(delta) / cat.prev * 100) : null;
+    ctx.textAlign   = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.font = 'bold 10.5px system-ui, sans-serif';
+    if (pct === null) {
+      ctx.fillStyle = mutedCol;
+      ctx.fillText('new', labelW + barAreaW + 6, y + barH + gap / 2);
+    } else {
+      ctx.fillStyle = delta > 0 ? '#ef4444' : '#22c55e';
+      ctx.fillText((delta > 0 ? '▲' : '▼') + pct + '%', labelW + barAreaW + 6, y + barH + gap / 2);
+    }
+  });
 }
 
 // ── Monthly trend bar chart ───────────────────────────────────────────────────
@@ -484,79 +583,114 @@ function renderBudgetTab(data) {
 
   const expCats    = new Set(data.by_category.map(c => c.category));
   const budgetCats = new Set(Object.keys(data.budgets));
-  const allCats    = [...new Set([...categories, ...expCats, ...budgetCats])];
+  const allCats    = [...new Set([...categories, ...expCats, ...budgetCats])].sort();
 
   const spendMap = {};
   for (const c of data.by_category) spendMap[c.category] = c.total;
 
-  let html = `<table class="budget-table">
-    <thead><tr>
-      <th style="text-align:left;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Category</th>
-      <th style="text-align:right;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Monthly Limit (${CURRENCY})</th>
-      <th style="text-align:right;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Spent This Month</th>
-      <th style="padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Progress</th>
-    </tr></thead><tbody>`;
+  const budgeted   = allCats.filter(c => budgetCats.has(c));
+  const unbudgeted = allCats.filter(c => !budgetCats.has(c));
 
-  for (const cat of allCats) {
-    const limit  = data.budgets[cat] || 0;
-    const spent  = spendMap[cat] || 0;
-    const pct    = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
-    const cls    = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
-    const dot    = getCategoryColor(cat);
+  let html = '';
+  if (budgeted.length === 0) {
+    html = `<p style="font-size:.85rem;color:var(--text-muted);margin:.5rem 0 1rem">No budgets set yet. Add a category below to get started.</p>`;
+  } else {
+    html = `<table class="budget-table" style="width:100%">
+      <thead><tr>
+        <th style="text-align:left;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Category</th>
+        <th style="text-align:right;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Limit (${CURRENCY})</th>
+        <th style="text-align:right;padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Spent</th>
+        <th style="padding:.5rem .75rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted)">Progress</th>
+        <th style="width:32px"></th>
+      </tr></thead><tbody>`;
 
-    html += `<tr class="budget-row budget-input-row" data-category="${escAttr(cat)}">
-      <td>
-        <div style="display:flex;align-items:center;gap:.5rem">
-          <div style="width:9px;height:9px;border-radius:50%;background:${dot};flex-shrink:0"></div>
-          <span style="font-weight:500;font-size:.875rem">${escHtml(cat)}</span>
-        </div>
-      </td>
-      <td style="text-align:right">
-        <input type="number" class="budget-limit-input"
-               value="${limit > 0 ? limit : ''}"
-               placeholder="No limit" min="0" step="0.01"
-               style="width:110px;padding:.3rem .5rem;border:1px solid var(--border);border-radius:4px;font-size:.83rem;text-align:right;background:var(--input-bg);color:var(--text);outline:none;font-family:inherit">
-      </td>
-      <td style="text-align:right;font-size:.875rem;color:${spent > 0 ? 'var(--text)' : 'var(--text-faint)'}">${spent > 0 ? fmt(spent) : '—'}</td>
-      <td style="min-width:150px">
-        ${limit > 0 ? `
+    for (const cat of budgeted) {
+      const limit = data.budgets[cat] || 0;
+      const spent = spendMap[cat] || 0;
+      const pct   = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
+      const cls   = pct >= 100 ? 'over' : pct >= 80 ? 'warn' : 'ok';
+      const dot   = getCategoryColor(cat);
+
+      html += `<tr class="budget-row budget-input-row" data-category="${escAttr(cat)}">
+        <td>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <div style="width:9px;height:9px;border-radius:50%;background:${dot};flex-shrink:0"></div>
+            <span style="font-weight:500;font-size:.875rem">${escHtml(cat)}</span>
+          </div>
+        </td>
+        <td style="text-align:right">
+          <input type="number" class="budget-limit-input"
+                 value="${limit > 0 ? limit : ''}"
+                 placeholder="0" min="0" step="0.01"
+                 data-cat="${escAttr(cat)}"
+                 style="width:100px;padding:.3rem .5rem;border:1px solid var(--border);border-radius:4px;font-size:.83rem;text-align:right;background:var(--input-bg);color:var(--text);outline:none;font-family:inherit"
+                 onblur="saveBudgetLimit(this)">
+        </td>
+        <td style="text-align:right;font-size:.875rem;color:${spent > 0 ? 'var(--text)' : 'var(--text-faint)'}">${spent > 0 ? fmt(spent) : '—'}</td>
+        <td style="min-width:150px">
           <div class="progress-wrap">
             <div class="progress-bar">
               <div class="progress-fill ${cls}" style="width:${pct.toFixed(1)}%"></div>
             </div>
             <span style="font-size:.72rem;font-weight:600;min-width:36px;text-align:right;color:${cls === 'over' ? '#ef4444' : cls === 'warn' ? '#f59e0b' : '#10b981'}">${Math.round(pct)}%</span>
           </div>
-        ` : `<span style="font-size:.75rem;color:var(--text-faint)">—</span>`}
-      </td>
-    </tr>`;
+        </td>
+        <td style="text-align:center">
+          <button onclick="deleteBudgetCategory('${escAttr(cat)}')"
+            style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:1rem;line-height:1;padding:.2rem .4rem;border-radius:4px"
+            title="Remove budget">×</button>
+        </td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
   }
 
-  html += '</tbody></table>';
   grid.innerHTML = html;
+
+  // Populate add-category dropdown
+  const sel = document.getElementById('budget-add-cat');
+  if (sel) {
+    sel.innerHTML = '<option value="">Select category…</option>' +
+      unbudgeted.map(c => `<option value="${escAttr(c)}">${escHtml(c)}</option>`).join('');
+  }
 }
 
-async function saveAllBudgets() {
-  const rows = document.querySelectorAll('.budget-input-row');
-  const ops  = [];
-  for (const row of rows) {
-    const cat = row.dataset.category;
-    const inp = row.querySelector('.budget-limit-input');
-    const val = parseFloat(inp.value);
-    if (inp.value === '' || val === 0 || isNaN(val)) {
-      ops.push(fetch(`/api/budget/${encodeURIComponent(cat)}`, { method: 'DELETE' }));
-    } else if (val > 0) {
-      ops.push(fetch('/api/budget', {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ category: cat, monthly_limit: val }),
-      }));
-    }
+async function saveBudgetLimit(input) {
+  const cat = input.dataset.cat;
+  const val = parseFloat(input.value);
+  if (!cat) return;
+  if (isNaN(val) || val <= 0) {
+    await fetch(`/api/budget/${encodeURIComponent(cat)}`, { method: 'DELETE' });
+  } else {
+    await fetch('/api/budget', {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ category: cat, monthly_limit: val }),
+    });
   }
-  await Promise.all(ops);
-  showToast('Budgets saved');
   const statusEl = document.getElementById('budget-status');
-  statusEl.style.display = 'inline';
-  setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+  if (statusEl) { statusEl.style.display = 'inline'; setTimeout(() => { statusEl.style.display = 'none'; }, 1500); }
+  await loadSummary();
+}
+
+async function deleteBudgetCategory(cat) {
+  await fetch(`/api/budget/${encodeURIComponent(cat)}`, { method: 'DELETE' });
+  await loadSummary();
+}
+
+async function addBudgetCategory() {
+  const sel   = document.getElementById('budget-add-cat');
+  const inp   = document.getElementById('budget-add-limit');
+  const cat   = sel ? sel.value : '';
+  const val   = parseFloat(inp ? inp.value : '');
+  if (!cat) { showToast('Select a category first'); return; }
+  if (isNaN(val) || val <= 0) { showToast('Enter a valid monthly limit'); return; }
+  await fetch('/api/budget', {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ category: cat, monthly_limit: val }),
+  });
+  if (inp) inp.value = '';
   await loadSummary();
 }
 
@@ -576,6 +710,7 @@ function switchTab(name) {
     requestAnimationFrame(() => {
       renderCategoryChart(summaryData);
       renderBankChart(summaryData);
+      renderCategoryTrendChart(summaryData);
       renderMonthlyChart(summaryData);
     });
   }
@@ -1037,6 +1172,7 @@ function toggleDarkMode(on) {
   if (summaryData) {
     renderCategoryChart(summaryData);
     renderBankChart(summaryData);
+    renderCategoryTrendChart(summaryData);
     renderMonthlyChart(summaryData);
   }
 }

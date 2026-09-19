@@ -783,6 +783,44 @@ def api_delete_budget(category):
 # Summary
 # ---------------------------------------------------------------------------
 
+@app.route("/api/category-trend")
+def api_category_trend():
+    """Monthly totals for one category over the N months ending at `end` (zero-filled)."""
+    category = request.args.get("category", "")
+    end      = request.args.get("end", datetime.now().strftime("%Y-%m"))
+    if not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", end):
+        return jsonify({"error": "end must be YYYY-MM"}), 400
+    try:
+        n = max(1, min(24, int(request.args.get("months", 6))))
+    except ValueError:
+        n = 6
+
+    y, m = int(end[:4]), int(end[5:7])
+    months = []
+    for i in range(n - 1, -1, -1):
+        idx = y * 12 + (m - 1) - i
+        months.append(f"{idx // 12}-{idx % 12 + 1:02d}")
+
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT substr(date,1,7) AS month, SUM(amount) AS total, COUNT(*) AS count
+               FROM expenses
+               WHERE category = ? AND substr(date,1,7) BETWEEN ? AND ?
+               GROUP BY month""",
+            (category, months[0], months[-1]),
+        ).fetchall()
+    found = {r["month"]: r for r in rows}
+    return jsonify({
+        "category": category,
+        "months": [
+            {"month": mo,
+             "total": round(found[mo]["total"], 2) if mo in found else 0,
+             "count": found[mo]["count"] if mo in found else 0}
+            for mo in months
+        ],
+    })
+
+
 @app.route("/api/summary")
 def api_summary():
     month = request.args.get("month", datetime.now().strftime("%Y-%m"))
@@ -819,12 +857,6 @@ def api_summary():
             (f"{prev_month}%",),
         ).fetchone()
 
-        prev_by_category = conn.execute(
-            """SELECT category, SUM(amount) AS total
-               FROM expenses WHERE date LIKE ? GROUP BY category""",
-            (f"{prev_month}%",),
-        ).fetchall()
-
         by_bank = conn.execute(
             """SELECT COALESCE(NULLIF(TRIM(bank),''), 'Untagged') AS bank,
                       SUM(amount) AS total
@@ -832,13 +864,6 @@ def api_summary():
                GROUP BY bank ORDER BY total DESC""",
             (f"{month}%",),
         ).fetchall()
-
-        top_merchant = conn.execute(
-            """SELECT description, SUM(amount) AS total, COUNT(*) AS visits
-               FROM expenses WHERE date LIKE ?
-               GROUP BY LOWER(description) ORDER BY total DESC LIMIT 1""",
-            (f"{month}%",),
-        ).fetchone()
 
         budgets = conn.execute("SELECT * FROM budgets").fetchall()
 
@@ -856,11 +881,9 @@ def api_summary():
         "ytd_total":      ytd_total["total"],
         "total_budget":   total_budget,
         "by_category":      by_cat_list,
-        "prev_by_category": [dict(r) for r in prev_by_category],
         "by_bank":          [dict(r) for r in by_bank],
         "monthly_totals": [dict(r) for r in monthly],
         "budgets":        budgets_dict,
-        "top_merchant":   dict(top_merchant) if top_merchant and top_merchant["total"] else None,
     })
 
 

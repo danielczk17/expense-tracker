@@ -46,11 +46,12 @@ async function init() {
 }
 
 // ── Month navigation ──────────────────────────────────────────────────────────
-function setMonth(m) {
+function setMonth(m, keepTrendWindow = false) {
   currentMonth = m;
+  if (!keepTrendWindow) trendEnd = null;   // month navigation: chart follows the selected month again
   document.getElementById('month-picker').value = m;
   expPage = 1;
-  Promise.all([loadSummary(), loadExpenses()]);
+  return Promise.all([loadSummary(), loadExpenses()]);
 }
 
 function shiftMonth(delta) {
@@ -69,7 +70,7 @@ async function loadSummary() {
     renderSummaryStrip(summaryData);
     renderCategoryChart(summaryData);
     renderBankChart(summaryData);
-    renderCategoryTrendChart(summaryData);
+    renderCategoryTrend();
     renderMonthlyChart(summaryData);
     const budgetTab = document.getElementById('tab-budget');
     if (budgetTab && budgetTab.style.display !== 'none') {
@@ -85,6 +86,8 @@ async function loadExpenses() {
   allExpenses = await res.json();
   selectedIds.clear();
   renderExpensesTable(allExpenses);
+  renderDrill();
+  renderTopMerchants();
 }
 
 async function loadCategories() {
@@ -114,13 +117,20 @@ function renderSummaryStrip(data) {
   const budgetEl    = document.getElementById('s-budget-used');
   const budgetSubEl = document.getElementById('s-budget-sub');
   if (data.total_budget != null && data.total_budget > 0) {
-    const pct = Math.round((data.total / data.total_budget) * 100);
-    const rem = data.total_budget - data.total;
+    // Only spending in categories that have a budget counts against it; the
+    // rest is shown separately so it can't push a within-budget month "over".
+    const budgetedSpend = data.by_category
+      .filter(c => c.budget != null)
+      .reduce((s, c) => s + c.total, 0);
+    const unbudgeted = data.total - budgetedSpend;
+    const pct = Math.round((budgetedSpend / data.total_budget) * 100);
+    const rem = data.total_budget - budgetedSpend;
     budgetEl.textContent  = pct + '%';
     budgetEl.className    = 'val ' + (pct >= 100 ? 'neg' : pct >= 80 ? '' : 'pos');
-    budgetSubEl.textContent = rem >= 0
+    budgetSubEl.textContent = (rem >= 0
       ? fmt(rem) + ' remaining'
-      : fmt(-rem) + ' over budget';
+      : fmt(-rem) + ' over budget')
+      + (unbudgeted > 0.005 ? ` · ${fmt(unbudgeted)} unbudgeted` : '');
   } else {
     budgetEl.textContent  = 'No budget';
     budgetEl.className    = 'val neutral';
@@ -154,17 +164,6 @@ function renderSummaryStrip(data) {
   } else {
     topCatEl.textContent    = '—';
     topCatAmtEl.textContent = '';
-  }
-
-  const topMerchantEl    = document.getElementById('s-top-merchant');
-  const topMerchantSubEl = document.getElementById('s-top-merchant-sub');
-  if (data.top_merchant) {
-    const m = data.top_merchant;
-    topMerchantEl.textContent    = m.description;
-    topMerchantSubEl.textContent = `${fmt(m.total)} · ${m.visits}×`;
-  } else {
-    topMerchantEl.textContent    = '—';
-    topMerchantSubEl.textContent = '—';
   }
 
   document.getElementById('s-ytd').textContent = fmt(data.ytd_total);
@@ -205,16 +204,222 @@ function renderCategoryChart(data) {
 
   const legend = document.getElementById('cat-legend');
   legend.innerHTML = '';
-  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.35rem;align-items:center;font-size:.82rem';
+  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.15rem;align-items:center;font-size:.82rem';
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
     legend.insertAdjacentHTML('beforeend',
-      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
-      `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>`
+      `<div class="legend-row" role="button" tabindex="0" data-value="${escAttr(seg.label)}" title="Show ${escAttr(seg.label)} expenses">` +
+        `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
+        `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
+        `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
+        `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>` +
+      `</div>`
     );
   }
+  bindLegendDrill(legend, 'category');
+  markDrillLegend();
+}
+
+// ── Top merchants (this month's expenses summed per merchant) ─────────────────
+const TOP_MERCHANTS = 5;
+
+function renderTopMerchants() {
+  const list  = document.getElementById('merchants-list');
+  const empty = document.getElementById('merchants-empty');
+  const meta  = document.getElementById('merchants-meta');
+  const all   = groupByMerchant(allExpenses);
+
+  if (!all.length) {
+    list.style.display  = 'none';
+    empty.style.display = '';
+    meta.textContent    = '';
+    return;
+  }
+  empty.style.display = 'none';
+  list.style.display  = '';
+
+  const top      = all.slice(0, TOP_MERCHANTS);
+  const monthSum = allExpenses.reduce((s, e) => s + e.amount, 0);
+  const maxTotal = top[0].total || 1;
+  meta.textContent = all.length > top.length ? `Top ${top.length} of ${all.length}` : `${all.length} merchant${all.length === 1 ? '' : 's'}`;
+
+  list.innerHTML = top.map((m, i) => {
+    const pct = monthSum > 0 ? (m.total / monthSum * 100).toFixed(1) : '0.0';
+    return `<div class="merchant-row" role="button" tabindex="0" data-value="${escAttr(m.name)}" title="Show ${escAttr(m.name)} expenses">
+      <div class="merchant-rank">${i + 1}</div>
+      <div style="min-width:0">
+        <div class="merchant-name">${escHtml(m.name)}</div>
+        <div class="merchant-sub">${m.visits} visit${m.visits === 1 ? '' : 's'} · ${pct}% of month</div>
+      </div>
+      <div class="merchant-amt">${fmt(m.total)}</div>
+      <div class="merchant-bar"><span style="width:${(m.total / maxTotal * 100).toFixed(1)}%"></span></div>
+    </div>`;
+  }).join('');
+
+  if (!list._drillBound) {
+    list._drillBound = true;
+    list.addEventListener('click', e => {
+      const row = e.target.closest('.merchant-row');
+      if (row) selectDrill('merchant', row.dataset.value);
+    });
+    list.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const row = e.target.closest('.merchant-row');
+      if (row) { e.preventDefault(); selectDrill('merchant', row.dataset.value); }
+    });
+  }
+  markDrillLegend();
+}
+
+// ── Drill-down (click a category or a mode on the dashboard) ──────────────────
+// One shared panel: `drill` is null or { kind: 'category' | 'bank', value }.
+let drill = null;
+
+const bankOf = e => (e.bank || '').trim() || 'Untagged';   // matches the summary's grouping
+
+// Statement descriptions are noisy ("AMAZE*GRABRIDES-E SINGAPORE SG", "BUS/MRT 888364888").
+// Reduce them to a merchant name so repeat visits group together.
+function merchantName(desc) {
+  const orig = (desc || '').trim();
+  if (/^(?:amaze\*|smp\*|grb\*)?grab/i.test(orig)) return 'Grab';
+  if (/^sqsp\*/i.test(orig)) return 'Squarespace';
+  let s = orig
+    // Card/wallet prefixes (AMAZE*, SMP*, GRB*) sit in front of the merchant; for
+    // anything else ("CLASSPASS*MONTHLY") the merchant is the part before the '*'.
+    .replace(/^(?:amaze|smp|grb|sp|pp)\*\s*/i, '')
+    .replace(/^([A-Za-z0-9.]{2,20})\*.*$/, '$1')
+    .replace(/#?\d{5,}/g, ' ')                         // reference / trip ids
+    .split(/\s+-\s+/)[0];                              // branch after " - "
+  let prev;
+  do {                                                 // trailing country / city / company tokens
+    prev = s;
+    s = s.replace(/\s*\b(?:SINGAPORE|SG|US|NEWYORK)\b\s*\d*\s*$/i, '')
+         .replace(/(?<=\S)SINGAPORE\s*$/i, '')
+         .replace(/\s+PTE\.?(?:\s*LTD\.?)?\s*$/i, '');
+  } while (s !== prev);
+  s = s.replace(/[\s.,\-_]+$/, '').replace(/\s+/g, ' ').trim();
+  return s || orig;
+}
+
+// Sum expenses per merchant, largest first
+function groupByMerchant(expenses) {
+  const map = new Map();
+  for (const e of expenses) {
+    const name = merchantName(e.description);
+    const key  = name.toLowerCase();
+    const m = map.get(key) || { name, total: 0, visits: 0 };
+    m.total  += e.amount;
+    m.visits += 1;
+    map.set(key, m);
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total);
+}
+
+function bindLegendDrill(legend, kind) {
+  if (legend._drillBound) return;
+  legend._drillBound = true;
+  legend.addEventListener('click', e => {
+    const row = e.target.closest('.legend-row');
+    if (row) selectDrill(kind, row.dataset.value);
+  });
+  legend.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('.legend-row');
+    if (row) { e.preventDefault(); selectDrill(kind, row.dataset.value); }
+  });
+}
+
+function selectDrill(kind, value) {
+  const same = drill && drill.kind === kind && drill.value === value;
+  drill = same ? null : { kind, value };                // click again to close
+  renderDrill();
+  if (drill) {
+    document.getElementById('drill-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+
+function closeDrill() {
+  drill = null;
+  renderDrill();
+}
+
+function markDrillLegend() {
+  for (const [sel, kind] of [['#cat-legend .legend-row', 'category'], ['#bank-legend .legend-row', 'bank'],
+                             ['#merchants-list .merchant-row', 'merchant']]) {
+    document.querySelectorAll(sel).forEach(r =>
+      r.classList.toggle('active', !!drill && drill.kind === kind && r.dataset.value === drill.value));
+  }
+}
+
+function renderDrill() {
+  const card = document.getElementById('drill-card');
+  const kind = drill ? drill.kind : null;
+  const matches = {
+    category: e => e.category === drill.value,
+    bank:     e => bankOf(e) === drill.value,
+    merchant: e => merchantName(e.description).toLowerCase() === drill.value.toLowerCase(),
+  };
+  const rows = drill
+    ? allExpenses.filter(matches[kind])
+        .sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount)
+    : [];
+
+  // Nothing to show (closed, or nothing under this label in the newly selected month)
+  if (!rows.length) {
+    drill = null;
+    card.style.display = 'none';
+    markDrillLegend();
+    return;
+  }
+
+  const label = drill.value;
+  let color;
+  if (kind === 'bank') {
+    const i = (summaryData?.by_bank || []).findIndex(b => b.bank === label);
+    color = BANK_COLORS[(i < 0 ? 0 : i) % BANK_COLORS.length];
+  } else if (kind === 'merchant') {
+    color = '#3b82f6';
+  } else {
+    color = getCategoryColor(label);
+  }
+  const total = rows.reduce((s, e) => s + e.amount, 0);
+  const monthLabel = monthLabelOf(currentMonth);
+
+  document.getElementById('drill-title').innerHTML =
+    `<span class="cat-chip" style="background:${color}1a;color:${color};border-color:${color}40">${escHtml(label)}</span>`;
+  document.getElementById('drill-meta').textContent =
+    `${monthLabel} · ${rows.length} expense${rows.length === 1 ? '' : 's'}`;
+
+  // The dimension already being filtered on is redundant, so show the other one
+  const showsCategory = kind !== 'category';
+  const extraHead = showsCategory ? 'Category' : 'Bank';
+  let html = `<table>
+    <thead><tr>
+      <th style="text-align:left">Date</th>
+      <th style="text-align:left">Description</th>
+      <th style="text-align:left">${extraHead}</th>
+      <th style="text-align:right">Amount</th>
+    </tr></thead><tbody>`;
+  for (const e of rows) {
+    const extra = showsCategory
+      ? (() => { const c = getCategoryColor(e.category);
+                 return `<span class="cat-chip" style="background:${c}1a;color:${c};border-color:${c}40">${escHtml(e.category)}</span>`; })()
+      : escHtml(e.bank || '—');
+    html += `<tr>
+      <td style="text-align:left;white-space:nowrap">${escHtml(e.date)}</td>
+      <td style="text-align:left;max-width:none;white-space:normal">${escHtml(e.description)}</td>
+      <td style="text-align:left;color:var(--text-muted);font-size:.78rem;white-space:nowrap">${extra}</td>
+      <td style="text-align:right;white-space:nowrap">${fmt(e.amount)}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>
+    <div class="drill-total" style="display:flex;justify-content:flex-end;align-items:center;gap:1rem;padding:.6rem 1rem;border-top:2px solid var(--border);font-size:.83rem">
+      <span style="font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);font-size:.72rem">${escHtml(label)} Total</span>
+      <span style="font-weight:700;color:var(--text)">${fmt(total)}</span>
+    </div>`;
+  document.getElementById('drill-body').innerHTML = html;
+  card.style.display = '';
+  markDrillLegend();
 }
 
 // ── Spending by Mode (bank) donut ────────────────────────────────────────────
@@ -248,105 +453,133 @@ function renderBankChart(data) {
 
   const legend = document.getElementById('bank-legend');
   legend.innerHTML = '';
-  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.35rem;align-items:center;font-size:.82rem';
+  legend.style.cssText = 'display:grid;grid-template-columns:10px 1fr auto auto;column-gap:.6rem;row-gap:.15rem;align-items:center;font-size:.82rem';
   for (const seg of segments) {
     const pct = data.total > 0 ? (seg.value / data.total * 100).toFixed(1) : '0.0';
     legend.insertAdjacentHTML('beforeend',
-      `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
-      `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
-      `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
-      `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>`
+      `<div class="legend-row" role="button" tabindex="0" data-value="${escAttr(seg.label)}" title="Show ${escAttr(seg.label)} expenses">` +
+        `<div style="width:10px;height:10px;border-radius:50%;background:${seg.color}"></div>` +
+        `<div style="color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(seg.label)}</div>` +
+        `<div style="color:var(--text-muted);font-size:.75rem;white-space:nowrap;text-align:right">${fmt(seg.value)}</div>` +
+        `<div style="font-weight:700;color:var(--text);white-space:nowrap;text-align:right">${pct}%</div>` +
+      `</div>`
     );
   }
+  bindLegendDrill(legend, 'bank');
+  markDrillLegend();
 }
 
-// ── Category vs Last Month chart ─────────────────────────────────────────────
-function renderCategoryTrendChart(data) {
+// ── Category trend over time ─────────────────────────────────────────────────
+let trendCategory = null;   // chosen category; defaults to the month's top category
+let trendMonths   = 6;
+let trendData     = null;
+let trendEnd      = null;   // pinned last month of the chart (set when a bar is clicked)
+let _trendReq     = 0;
+
+function setTrendCategory(cat) { trendCategory = cat; renderCategoryTrend(); }
+function setTrendMonths(n)     { trendMonths = parseInt(n, 10) || 6; renderCategoryTrend(); }
+
+function populateTrendCategories(data) {
+  const names = [...new Set([...categories, ...(data.by_category || []).map(c => c.category)])];
+  if (!trendCategory || !names.includes(trendCategory)) {
+    trendCategory = (data.by_category && data.by_category[0] && data.by_category[0].category) || names[0] || null;
+  }
+  const sel = document.getElementById('ct-category');
+  const sig = names.join('\u0000');
+  if (sel._sig !== sig) {
+    sel._sig = sig;
+    sel.innerHTML = names.map(n => `<option value="${escAttr(n)}">${escHtml(n)}</option>`).join('');
+  }
+  if (trendCategory) sel.value = trendCategory;
+  document.getElementById('ct-months').value = String(trendMonths);
+}
+
+async function renderCategoryTrend() {
+  if (!summaryData) return;
+  populateTrendCategories(summaryData);
+  if (!trendCategory) { trendData = null; drawCategoryTrend(); return; }
+
+  const req = ++_trendReq;
+  const res = await fetch(`/api/category-trend?category=${encodeURIComponent(trendCategory)}` +
+                          `&months=${trendMonths}&end=${trendEnd || currentMonth}`);
+  const data = await res.json();
+  if (req !== _trendReq) return;          // a newer request superseded this one
+  trendData = data;
+  drawCategoryTrend();
+}
+
+// Which month column (with spending) is under the mouse, or null
+function trendMonthAt(canvas, e) {
+  const g = canvas._barGeom;
+  if (!g) return null;
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  if (y < g.top || y > g.bottom || x < g.left) return null;
+  const d = g.data[Math.floor((x - g.left) / g.step)];
+  return d && d.total > 0 ? d : null;
+}
+
+function bindTrendClicks(canvas) {
+  if (canvas._trendBound) return;
+  canvas._trendBound = true;
+  canvas.addEventListener('mousemove', e => {
+    const d = trendMonthAt(canvas, e);
+    canvas.style.cursor = d ? 'pointer' : '';
+    canvas.title = d ? `${monthLabelOf(d.month)}: ${fmt(d.total)} — click to see the expenses` : '';
+  });
+  canvas.addEventListener('click', e => {
+    const d = trendMonthAt(canvas, e);
+    if (d) openTrendMonth(d.month);
+  });
+}
+
+function monthLabelOf(ym) {
+  const [y, mo] = ym.split('-').map(Number);
+  return new Date(y, mo - 1, 1).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+
+// Jump the dashboard to a month and show that category's expenses for it
+async function openTrendMonth(month) {
+  const cat = trendData.category;
+  if (month === currentMonth) { selectDrill('category', cat); return; }
+  trendEnd = trendData.months[trendData.months.length - 1].month;   // keep the bars where they are
+  await setMonth(month, true);
+  drill = { kind: 'category', value: cat };
+  renderDrill();
+  if (drill) document.getElementById('drill-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Draws from the last fetched data (also used to redraw on tab switch / dark mode)
+function drawCategoryTrend() {
   const area  = document.getElementById('cat-trend-area');
   const empty = document.getElementById('cat-trend-empty');
-  const curr  = data.by_category || [];
-  const prev  = data.prev_by_category || [];
+  const total = trendData ? trendData.months.reduce((s, m) => s + m.total, 0) : 0;
 
-  if (!curr.length) {
+  if (!trendData || !total) {
     area.style.display  = 'none';
     empty.style.display = '';
+    empty.textContent   = trendData
+      ? `No ${trendData.category} spending in the last ${trendMonths} months.`
+      : 'No categories yet.';
     return;
   }
   area.style.display  = '';
   empty.style.display = 'none';
 
-  const prevMap = Object.fromEntries(prev.map(c => [c.category, c.total]));
-  const cats = curr.map(c => ({
-    name:  c.category,
-    curr:  c.total,
-    prev:  prevMap[c.category] ?? 0,
-    color: getCategoryColor(c.category),
-  }));
+  const avg    = total / trendData.months.length;
+  const budget = summaryData && summaryData.budgets ? summaryData.budgets[trendData.category] : null;
+  document.getElementById('ct-summary').innerHTML =
+    `${trendMonths}-month total ${fmt(total)} · avg ${fmt(avg)}/month` +
+    (budget ? ` · <span style="display:inline-block;width:16px;border-top:2px dashed #ef4444;vertical-align:middle;margin:0 .2rem 0 .1rem"></span>budget ${fmt(budget)}/month` : '');
 
   const canvas = document.getElementById('cat-trend-canvas');
-  const dpr    = window.devicePixelRatio || 1;
-  const W      = canvas.parentElement.clientWidth || 300;
-  const labelW = 82;
-  const deltaW = 52;
-  const barAreaW = W - labelW - deltaW;
-  const rowH   = 30;
-  const barH   = 8;
-  const gap    = 4;
-  const H      = cats.length * rowH + 8;
-
-  canvas.width  = W * dpr;
-  canvas.height = H * dpr;
-  canvas.style.width  = W + 'px';
-  canvas.style.height = H + 'px';
-
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, W, H);
-
-  const isDark   = document.body.classList.contains('dark');
-  const textCol  = isDark ? '#e2e8f0' : '#1e293b';
-  const mutedCol = isDark ? '#64748b' : '#94a3b8';
-  const maxVal   = Math.max(...cats.flatMap(c => [c.curr, c.prev]), 1);
-
-  cats.forEach((cat, i) => {
-    const y = i * rowH + 4;
-
-    // Category label
-    ctx.fillStyle  = textCol;
-    ctx.font       = '11px system-ui, sans-serif';
-    ctx.textAlign  = 'right';
-    ctx.textBaseline = 'middle';
-    const label = cat.name.length > 11 ? cat.name.slice(0, 10) + '…' : cat.name;
-    ctx.fillText(label, labelW - 6, y + barH + gap / 2);
-
-    // Current month bar
-    const currW = (cat.curr / maxVal) * barAreaW;
-    ctx.fillStyle = cat.color;
-    ctx.beginPath();
-    ctx.roundRect(labelW, y, Math.max(currW, 2), barH, 2);
-    ctx.fill();
-
-    // Previous month bar
-    const prevW = (cat.prev / maxVal) * barAreaW;
-    ctx.fillStyle = cat.color + '55';
-    ctx.beginPath();
-    ctx.roundRect(labelW, y + barH + gap, Math.max(prevW, cat.prev > 0 ? 2 : 0), barH, 2);
-    ctx.fill();
-
-    // Delta text on the right
-    const delta = cat.curr - cat.prev;
-    const pct   = cat.prev > 0 ? Math.round(Math.abs(delta) / cat.prev * 100) : null;
-    ctx.textAlign   = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = 'bold 10.5px system-ui, sans-serif';
-    if (pct === null) {
-      ctx.fillStyle = mutedCol;
-      ctx.fillText('new', labelW + barAreaW + 6, y + barH + gap / 2);
-    } else {
-      ctx.fillStyle = delta > 0 ? '#ef4444' : '#22c55e';
-      ctx.fillText((delta > 0 ? '▲' : '▼') + pct + '%', labelW + barAreaW + 6, y + barH + gap / 2);
-    }
-  });
+  bindTrendClicks(canvas);
+  requestAnimationFrame(() => drawBarChart(canvas, trendData.months, {
+    color: getCategoryColor(trendData.category),
+    height: 190,
+    valueLabels: true,
+    refLine: budget ? { value: budget } : null,
+  }));
 }
 
 // ── Monthly trend bar chart ───────────────────────────────────────────────────
@@ -710,7 +943,7 @@ function switchTab(name) {
     requestAnimationFrame(() => {
       renderCategoryChart(summaryData);
       renderBankChart(summaryData);
-      renderCategoryTrendChart(summaryData);
+      drawCategoryTrend();
       renderMonthlyChart(summaryData);
     });
   }
@@ -1172,7 +1405,7 @@ function toggleDarkMode(on) {
   if (summaryData) {
     renderCategoryChart(summaryData);
     renderBankChart(summaryData);
-    renderCategoryTrendChart(summaryData);
+    drawCategoryTrend();
     renderMonthlyChart(summaryData);
   }
 }
@@ -1210,7 +1443,9 @@ function resolveConfirm(val) {
 // ── Canvas: Donut chart ───────────────────────────────────────────────────────
 function drawDonut(canvas, segments) {
   const dpr  = window.devicePixelRatio || 1;
-  const size = canvas.offsetWidth || 190;
+  // Size from the wrapper that the centre label is centred in; offsetWidth is 0
+  // while the charts area is hidden, so fall back to the canvas's 160px attribute.
+  const size = canvas.parentElement.clientWidth || 160;
   canvas.width  = size * dpr;
   canvas.height = size * dpr;
   canvas.style.width  = size + 'px';
@@ -1254,20 +1489,43 @@ function drawDonut(canvas, segments) {
     canvas._donutListenerAttached = true;
     canvas.addEventListener('mousemove', _donutMouseMove);
     canvas.addEventListener('mouseleave', _donutMouseLeave);
+    // Clicking a segment opens the expenses behind it (category or mode)
+    const drillKind = DONUT_DRILL_KIND[canvas.id];
+    if (drillKind) {
+      canvas.addEventListener('click', e => {
+        const arc = _donutArcAt(canvas, e);
+        if (arc) selectDrill(drillKind, arc.seg.label);
+      });
+    }
   }
 }
 
-function _donutMouseMove(e) {
-  const rect = this.getBoundingClientRect();
-  const mx   = e.clientX - rect.left;
-  const my   = e.clientY - rect.top;
-  const cx   = this._donutCx, cy = this._donutCy;
-  const dx   = mx - cx, dy = my - cy;
-  const dist = Math.sqrt(dx * dx + dy * dy);
-  const arcs = this._donutArcs || [];
+const DONUT_DRILL_KIND = { 'cat-canvas': 'category', 'bank-canvas': 'bank' };
 
-  // Check if inside the ring
-  const inRing = arcs.length && dist >= arcs[0].r && dist <= arcs[0].R;
+// Returns the donut arc under the mouse event, or null when outside the ring
+function _donutArcAt(canvas, e) {
+  const rect = canvas.getBoundingClientRect();
+  const dx   = e.clientX - rect.left - canvas._donutCx;
+  const dy   = e.clientY - rect.top  - canvas._donutCy;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const arcs = canvas._donutArcs || [];
+  if (!arcs.length || dist < arcs[0].r || dist > arcs[0].R) return null;
+
+  // Normalize cursor angle to [0, 2π) starting from -π/2 (12 o'clock)
+  let a = Math.atan2(dy, dx) + Math.PI / 2;
+  if (a < 0) a += 2 * Math.PI;
+  return arcs.find(arc => {
+    // Normalize arc start/end to same [0, 2π) domain
+    let s = arc.start + Math.PI / 2; if (s < 0) s += 2 * Math.PI;
+    let en = arc.end  + Math.PI / 2; if (en < 0) en += 2 * Math.PI;
+    if (s <= en) return a >= s && a <= en;
+    return a >= s || a <= en; // wraps around 2π
+  }) || null;
+}
+
+function _donutMouseMove(e) {
+  const hit = _donutArcAt(this, e);
+  this.style.cursor = hit && DONUT_DRILL_KIND[this.id] ? 'pointer' : '';
   let tip = document.getElementById('donut-tooltip');
   if (!tip) {
     tip = document.createElement('div');
@@ -1275,19 +1533,6 @@ function _donutMouseMove(e) {
     tip.style.cssText = 'position:absolute;pointer-events:none;background:var(--bg-card);border:1px solid var(--border);border-radius:.4rem;padding:.3rem .65rem;font-size:.75rem;font-weight:600;color:var(--text);box-shadow:0 4px 12px rgba(0,0,0,.15);white-space:nowrap;z-index:50;transition:opacity .1s';
     document.getElementById('spending-charts-area').appendChild(tip);
   }
-
-  if (!inRing) { tip.style.opacity = '0'; return; }
-
-  // Normalize cursor angle to [0, 2π) starting from -π/2 (12 o'clock)
-  let a = Math.atan2(dy, dx) + Math.PI / 2;
-  if (a < 0) a += 2 * Math.PI;
-  const hit = arcs.find(arc => {
-    // Normalize arc start/end to same [0, 2π) domain
-    let s = arc.start + Math.PI / 2; if (s < 0) s += 2 * Math.PI;
-    let en = arc.end  + Math.PI / 2; if (en < 0) en += 2 * Math.PI;
-    if (s <= en) return a >= s && a <= en;
-    return a >= s || a <= en; // wraps around 2π
-  });
 
   if (hit) {
     const pct = (hit.seg.value / this._donutTotal * 100).toFixed(1);
@@ -1308,12 +1553,14 @@ function _donutMouseLeave() {
 }
 
 // ── Canvas: Bar chart ─────────────────────────────────────────────────────────
-function drawBarChart(canvas, data) {
+// opts (all optional): color, height, valueLabels, refLine {value}
+function drawBarChart(canvas, data, opts = {}) {
   const dpr    = window.devicePixelRatio || 1;
   const W      = canvas.offsetWidth || canvas.parentElement?.offsetWidth || 600;
-  const H      = 200;
+  const H      = opts.height || 200;
   canvas.width  = W * dpr;
   canvas.height = H * dpr;
+  canvas.style.height = H + 'px';
 
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
@@ -1321,18 +1568,20 @@ function drawBarChart(canvas, data) {
   const isDark   = document.body.classList.contains('dark');
   const gridCol  = isDark ? 'rgba(255,255,255,.07)' : 'rgba(0,0,0,.06)';
   const textCol  = isDark ? '#64748b' : '#94a3b8';
-  const barColor = '#3b82f6';
-  const curColor = '#1d4ed8';
+  const barColor = opts.color || '#3b82f6';
+  const curColor = opts.color || '#1d4ed8';
 
   const pad = { top: 16, right: 10, bottom: 40, left: 58 };
   const cW  = W - pad.left - pad.right;
   const cH  = H - pad.top  - pad.bottom;
 
-  const maxVal  = Math.max(...data.map(d => d.total), 1);
+  const maxVal  = Math.max(...data.map(d => d.total), opts.refLine ? opts.refLine.value : 0, 1);
   const niceTop = niceMax(maxVal);
   const ticks   = 4;
   const step    = cW / data.length;
   const bw      = Math.max(6, step * 0.55);
+
+  canvas._barGeom = { left: pad.left, step, top: pad.top, bottom: H, data };   // for click hit-testing
 
   ctx.font = `10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif`;
 
@@ -1356,6 +1605,7 @@ function drawBarChart(canvas, data) {
     const isCur  = d.month === currentMonth;
 
     ctx.fillStyle = isCur ? curColor : barColor;
+    if (opts.color && !isCur) ctx.globalAlpha = 0.55;   // single-colour chart: dim past months
     ctx.beginPath();
     if (ctx.roundRect) {
       ctx.roundRect(x, y, bw, barH, [3, 3, 0, 0]);
@@ -1363,6 +1613,14 @@ function drawBarChart(canvas, data) {
       ctx.rect(x, y, bw, barH);
     }
     ctx.fill();
+    ctx.globalAlpha = 1;
+
+    if (opts.valueLabels && d.total > 0) {
+      ctx.font      = `600 10px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif`;
+      ctx.fillStyle = isDark ? '#e2e8f0' : '#334155';
+      ctx.textAlign = 'center';
+      ctx.fillText(step >= 56 ? fmt(d.total) : fmtK(d.total), pad.left + i * step + step / 2, y - 5);
+    }
 
     // Month label
     const date  = new Date(d.month + '-01');
@@ -1381,6 +1639,17 @@ function drawBarChart(canvas, data) {
       ctx.fillText(d.month.slice(0, 4), pad.left + i * step + step / 2, pad.top + cH + 29);
     }
   });
+
+  // Optional dashed reference line (e.g. the category's monthly budget)
+  if (opts.refLine) {
+    const y = pad.top + cH - (opts.refLine.value / niceTop) * cH;
+    ctx.save();
+    ctx.strokeStyle = '#ef4444';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(pad.left + cW, y); ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function niceMax(v) {

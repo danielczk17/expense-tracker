@@ -254,6 +254,57 @@ header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .01em; }
 
 /* ── Tables ── */
 .table-wrap { overflow-x: auto; }
+
+/* Dashboard drill-down panel: clear the sticky header when scrolled to; long lists scroll inside */
+#drill-card { scroll-margin-top: 72px; }
+#drill-body { max-height: 60vh; overflow-y: auto; }
+#drill-body thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-subtle); }
+#drill-body .drill-total { position: sticky; bottom: 0; background: var(--bg-card); }
+
+/* Category Trend controls */
+.ct-select {
+  padding: .3rem .55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: .78rem;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Top Merchants list */
+.merchant-row {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  column-gap: .6rem;
+  align-items: center;
+  padding: .5rem 1.25rem;
+  cursor: pointer;
+}
+.merchant-row:hover, .merchant-row.active { background: var(--bg-subtle); }
+.merchant-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.merchant-rank { font-size: .72rem; font-weight: 700; color: var(--text-faint); text-align: right; }
+.merchant-name { font-size: .84rem; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merchant-sub  { font-size: .7rem; color: var(--text-muted); margin-top: .1rem; }
+.merchant-amt  { font-size: .84rem; font-weight: 700; color: var(--text); text-align: right; white-space: nowrap; }
+.merchant-bar  { grid-column: 2 / 4; height: 4px; border-radius: 2px; background: var(--border-subtle); margin-top: .35rem; overflow: hidden; }
+.merchant-bar > span { display: block; height: 100%; border-radius: 2px; background: #3b82f6; }
+
+/* Clickable rows in the dashboard donut legends (category and mode) */
+.legend-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: .2rem .35rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.legend-row:hover { background: var(--bg-subtle); }
+.legend-row.active { background: var(--bg-subtle); box-shadow: inset 0 0 0 1px var(--border); }
+.legend-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 table { width: 100%; border-collapse: collapse; font-size: .84rem; }
 thead tr { background: var(--bg-subtle); }
 th {

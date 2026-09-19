@@ -60,11 +60,6 @@
       <div class="sub" id="s-top-cat-amt">—</div>
     </div>
     <div class="summary-card">
-      <div class="lbl">Top Merchant</div>
-      <div class="val" id="s-top-merchant" style="font-size:1.1rem">—</div>
-      <div class="sub" id="s-top-merchant-sub">—</div>
-    </div>
-    <div class="summary-card">
       <div class="lbl">YTD Total</div>
       <div class="val" id="s-ytd">—</div>
     </div>
@@ -128,22 +123,52 @@
       </div>
     </div>
 
-    <!-- Category vs Last Month chart -->
-    <div class="card" style="flex:1;min-width:0">
+    <!-- Right column: Category Trend + Top Merchants -->
+    <div style="flex:1;min-width:0">
+
+    <!-- Category trend: one category's spending over the past few months -->
+    <div class="card" id="cat-trend-card">
       <div class="card-header">
-        <span class="card-title">vs Last Month</span>
-      </div>
-      <div id="cat-trend-empty" class="empty">No data to compare.</div>
-      <div id="cat-trend-area" style="display:none;padding:1rem 1.25rem 1.25rem">
-        <div style="display:flex;gap:1rem;font-size:.7rem;color:var(--text-muted);margin-bottom:.75rem;align-items:center">
-          <span style="display:flex;align-items:center;gap:.35rem"><span style="display:inline-block;width:12px;height:8px;border-radius:2px;background:var(--accent)"></span>This month</span>
-          <span style="display:flex;align-items:center;gap:.35rem"><span id="cat-trend-legend-prev" style="display:inline-block;width:12px;height:8px;border-radius:2px;background:#94a3b8;opacity:.45"></span>Last month</span>
+        <span class="card-title">Category Trend</span>
+        <div style="display:flex;gap:.5rem;margin-left:auto">
+          <select id="ct-category" class="ct-select" aria-label="Category" onchange="setTrendCategory(this.value)"></select>
+          <select id="ct-months" class="ct-select" aria-label="Period" onchange="setTrendMonths(this.value)">
+            <option value="3">3 months</option>
+            <option value="6" selected>6 months</option>
+            <option value="12">12 months</option>
+          </select>
         </div>
+      </div>
+      <div id="cat-trend-empty" class="empty" style="display:none">No spending in this category.</div>
+      <div id="cat-trend-area" style="padding:1rem 1.25rem 1.25rem">
+        <div id="ct-summary" style="font-size:.75rem;color:var(--text-muted);margin-bottom:.5rem"></div>
         <canvas id="cat-trend-canvas" style="display:block;width:100%"></canvas>
       </div>
     </div>
 
+    <!-- Top merchants: expenses summed per merchant, largest first -->
+    <div class="card" id="merchants-card">
+      <div class="card-header">
+        <span class="card-title">Top Merchants</span>
+        <span id="merchants-meta" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
+      </div>
+      <div id="merchants-empty" class="empty">No expenses recorded for this month.</div>
+      <div id="merchants-list" style="display:none"></div>
+    </div>
+
+    </div><!-- end right column -->
+
     </div><!-- end side-by-side row -->
+
+    <!-- Drill-down: expenses behind the category or mode clicked above -->
+    <div class="card" id="drill-card" style="display:none">
+      <div class="card-header">
+        <span class="card-title" id="drill-title">Details</span>
+        <span id="drill-meta" style="font-size:.78rem;color:var(--text-muted);margin-left:.75rem"></span>
+        <button class="btn btn-ghost" style="margin-left:auto;font-size:.78rem;padding:.3rem .7rem" onclick="closeDrill()">Close &#10005;</button>
+      </div>
+      <div class="table-wrap" id="drill-body"></div>
+    </div>
 
     <div class="card">
       <div class="card-header">
@@ -301,7 +326,7 @@
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center">
           <button id="stmt-delete-btn" class="btn" disabled onclick="deleteSelectedStatements()"
             style="font-size:.8rem;padding:.35rem .85rem;background:#ef4444;border:1px solid #ef4444;color:#fff">Delete</button>
-          <button class="btn btn-primary" style="font-size:.8rem;padding:.35rem .85rem" onclick="document.getElementById('stmt-file-input').click()">&#129302; Upload PDF Statement</button>
+          <button class="btn btn-primary" style="font-size:.8rem;padding:.35rem .85rem" onclick="document.getElementById('stmt-file-input').click()">&#129302; Upload Statement</button>
         </div>
       </div>
       <div id="statements-wrap" style="padding:.25rem 0">

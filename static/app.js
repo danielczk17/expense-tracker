@@ -32,6 +32,7 @@ let expSortCol    = 'date';
 let expSortAsc    = false;
 let stmtRows      = [];
 let stmtFilename  = '';
+let savingStatement = false;
 const EXP_PAGE_SIZE = 25;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -137,36 +138,62 @@ function renderSummaryStrip(data) {
     budgetSubEl.textContent = 'Set in Budget tab';
   }
 
-  const vsEl    = document.getElementById('s-vs-last');
-  const vsSubEl = document.getElementById('s-vs-last-sub');
-  const prev = data.prev_total ?? 0;
-  if (prev === 0 && data.total === 0) {
-    vsEl.textContent    = '—';
-    vsEl.className      = 'val neutral';
-    vsSubEl.textContent = 'No data';
-  } else if (prev === 0) {
-    vsEl.textContent    = '—';
-    vsEl.className      = 'val neutral';
-    vsSubEl.textContent = 'No last month data';
+  // Average month: mean of up to 3 months before the selected one that have data.
+  // The selected month is left out so it can't skew its own baseline.
+  const avgEl    = document.getElementById('s-avg');
+  const avgSubEl = document.getElementById('s-avg-sub');
+  const prior = (data.monthly_totals || []).filter(m => m.month < currentMonth).slice(-3);
+  if (!prior.length) {
+    avgEl.textContent    = '—';
+    avgSubEl.textContent = 'No earlier months';
   } else {
-    const diff = data.total - prev;
-    const pct  = Math.round((diff / prev) * 100);
-    vsEl.textContent    = (diff >= 0 ? '+' : '') + fmt(diff);
-    vsEl.className      = 'val ' + (diff > 0 ? 'neg' : diff < 0 ? 'pos' : 'neutral');
-    vsSubEl.textContent = (pct >= 0 ? '+' : '') + pct + '% vs last month';
+    const avg = prior.reduce((s, m) => s + m.total, 0) / prior.length;
+    avgEl.textContent = fmt(avg);
+    const span = `last ${prior.length} month${prior.length === 1 ? '' : 's'}`;
+    // One earlier month isn't a baseline yet: show it, but don't draw a comparison from it
+    if (data.total > 0 && avg > 0 && prior.length >= 2) {
+      const pct = Math.round((data.total - avg) / avg * 100);
+      avgSubEl.textContent = (pct === 0 ? 'In line with avg' : `${Math.abs(pct)}% ${pct > 0 ? 'above' : 'below'} avg`) + ` · ${span}`;
+    } else {
+      avgSubEl.textContent = span;
+    }
   }
 
-  const topCatEl    = document.getElementById('s-top-cat');
-  const topCatAmtEl = document.getElementById('s-top-cat-amt');
-  if (data.by_category.length > 0) {
-    topCatEl.textContent    = data.by_category[0].category;
-    topCatAmtEl.textContent = fmt(data.by_category[0].total);
+  // Biggest mover: the category whose spend differs most from its own average over the
+  // earlier months. Needs the same 2+ month baseline as the Average Month tile.
+  const moverEl    = document.getElementById('s-mover');
+  const moverSubEl = document.getElementById('s-mover-sub');
+  moverSubEl.style.color = '';
+  const base = Object.fromEntries((data.category_avg || []).map(c => [c.category, c.avg]));
+  const cur  = Object.fromEntries(data.by_category.map(c => [c.category, c.total]));
+  const moves = [...new Set([...Object.keys(base), ...Object.keys(cur)])]
+    .map(cat => ({ cat, delta: (cur[cat] || 0) - (base[cat] || 0) }))
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  if ((data.avg_months || 0) < 2 || !data.by_category.length) {
+    moverEl.textContent    = '—';
+    moverSubEl.textContent = data.by_category.length ? 'Needs 2+ earlier months' : 'No data';
+  } else if (!moves.length || Math.abs(moves[0].delta) < 1) {
+    moverEl.textContent    = '—';
+    moverSubEl.textContent = 'In line with your average';
   } else {
-    topCatEl.textContent    = '—';
-    topCatAmtEl.textContent = '';
+    const m = moves[0];
+    moverEl.textContent    = m.cat;
+    moverSubEl.textContent = `${m.delta > 0 ? '▲' : '▼'} ${fmt(Math.abs(m.delta))} ${m.delta > 0 ? 'above' : 'below'} avg`;
+    moverSubEl.style.color = m.delta > 0 ? '#ef4444' : '#16a34a';   // more spend = red, less = green
   }
 
-  document.getElementById('s-ytd').textContent = fmt(data.ytd_total);
+  // Largest single expense this month
+  const largestEl    = document.getElementById('s-largest');
+  const largestSubEl = document.getElementById('s-largest-sub');
+  const big = data.largest_expense;
+  if (big) {
+    const when = new Date(big.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    largestEl.textContent    = fmt(big.amount);
+    largestSubEl.textContent = `${merchantName(big.description)} · ${when}`;
+  } else {
+    largestEl.textContent    = '—';
+    largestSubEl.textContent = 'No data';
+  }
 }
 
 // ── Category donut chart ──────────────────────────────────────────────────────
@@ -372,6 +399,8 @@ function renderDrill() {
     return;
   }
 
+  card.classList.toggle('after-row2', kind === 'merchant');   // merchants live in row 2
+
   const label = drill.value;
   let color;
   if (kind === 'bank') {
@@ -576,7 +605,7 @@ function drawCategoryTrend() {
   bindTrendClicks(canvas);
   requestAnimationFrame(() => drawBarChart(canvas, trendData.months, {
     color: getCategoryColor(trendData.category),
-    height: 190,
+    height: Math.max(190, canvas.parentElement.clientHeight),   // fill the card
     valueLabels: true,
     refLine: budget ? { value: budget } : null,
   }));
@@ -596,7 +625,7 @@ function renderMonthlyChart(data) {
   empty.style.display = 'none';
 
   const canvas = document.getElementById('trend-canvas');
-  requestAnimationFrame(() => drawBarChart(canvas, data.monthly_totals));
+  requestAnimationFrame(() => drawBarChart(canvas, data.monthly_totals, { height: Math.max(200, canvas.parentElement.clientHeight) }));
 }
 
 // ── Expenses table ────────────────────────────────────────────────────────────
@@ -1039,14 +1068,72 @@ async function uploadStatement(input) {
     const res  = await fetch('/api/parse-statement', { method: 'POST', body: form });
     const data = await res.json();
     if (data.error) { showToast(data.error, 'error'); return; }
-    openStatementModal(data.transactions);
+
+    // Warn before showing the review screen if these transactions are already saved
+    let skipDuplicates = false;
+    const dup = data.duplicates;
+    if (dup && dup.count > 0) {
+      setSpinner(false);
+      const choice = await askDuplicate(dup);
+      if (choice === 'cancel') { showToast('Import cancelled'); return; }
+      skipDuplicates = choice === 'new';
+    }
+    openStatementModal(data.transactions, skipDuplicates);
   } finally {
     setSpinner(false);
   }
 }
 
-function openStatementModal(transactions) {
-  stmtRows = transactions.map((t, i) => ({ ...t, _id: i, included: true, _origCategory: t.category }));
+// ── Duplicate statement warning ───────────────────────────────────────────────
+let dupResolve = null;
+
+// Resolves to 'cancel' | 'all' (import everything anyway) | 'new' (skip the duplicates)
+function askDuplicate(dup) {
+  const full  = dup.count === dup.total;
+  const fresh = dup.total - dup.count;
+  document.getElementById('dup-title').textContent = full
+    ? 'This statement looks already uploaded'
+    : 'Some of these transactions are already saved';
+  document.getElementById('dup-msg').textContent = full
+    ? `All ${dup.total} transactions in "${stmtFilename}" already exist. Importing it again would create duplicate expenses and inflate your totals.`
+    : `${dup.count} of ${dup.total} transactions in "${stmtFilename}" already exist — this is probably an overlapping statement. ` +
+      `${fresh} ${fresh === 1 ? 'is' : 'are'} new.`;
+
+  const rows = dup.statements.map(st =>
+    `<div class="dup-stmt"><strong>${escHtml(st.bank || 'Statement')}</strong> · ${escHtml(st.period || '')}` +
+    `<br><span>${escHtml(st.filename || 'unnamed file')} · uploaded ${escHtml((st.uploaded_at || '').slice(0, 10))} · ${st.transaction_count} transactions</span></div>`);
+  if (dup.manual > 0) {
+    rows.push(`<div class="dup-stmt"><span>${dup.manual} matched expense${dup.manual === 1 ? '' : 's'} you added manually or imported from CSV</span></div>`);
+  }
+  document.getElementById('dup-list').innerHTML = rows.join('');
+
+  const btn = (label, val, style) =>
+    `<button class="btn ${style}" onclick="resolveDuplicate('${val}')">${label}</button>`;
+  document.getElementById('dup-actions').innerHTML = full
+    ? btn('Import anyway', 'all', 'btn-ghost') + btn('Cancel', 'cancel', 'btn-primary')
+    : btn('Cancel', 'cancel', 'btn-ghost') + btn('Import anyway', 'all', 'btn-ghost') +
+      btn(`Import ${fresh} new only`, 'new', 'btn-primary');
+
+  document.getElementById('dup-overlay').style.display = 'flex';
+  // Safe default: focus the button that avoids creating duplicates
+  const safe = document.querySelector('#dup-actions .btn-primary');
+  if (safe) safe.focus();
+  return new Promise(resolve => { dupResolve = resolve; });
+}
+
+function resolveDuplicate(val) {
+  document.getElementById('dup-overlay').style.display = 'none';
+  if (dupResolve) { dupResolve(val); dupResolve = null; }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('dup-overlay').style.display === 'flex') resolveDuplicate('cancel');
+});
+
+function openStatementModal(transactions, skipDuplicates = false) {
+  stmtRows = transactions.map((t, i) => ({
+    ...t, _id: i, included: !(skipDuplicates && t.duplicate), _origCategory: t.category,
+  }));
   renderStmtModal();
   document.getElementById('stmt-overlay').style.display = 'flex';
 }
@@ -1054,7 +1141,8 @@ function openStatementModal(transactions) {
 function renderStmtModal() {
   const included = stmtRows.filter(r => r.included).length;
   document.getElementById('stmt-count').textContent = stmtRows.length
-    ? `${stmtRows.length} transaction${stmtRows.length !== 1 ? 's' : ''} found — review and edit before saving`
+    ? `${stmtRows.length} transaction${stmtRows.length !== 1 ? 's' : ''} found — review and edit before saving` +
+      (stmtRows.some(r => r.duplicate) ? ` · ${stmtRows.filter(r => r.duplicate).length} already imported` : '')
     : 'No transactions found';
   const saveBtn = document.getElementById('stmt-save-btn');
   saveBtn.textContent = `Save ${included} Expense${included !== 1 ? 's' : ''}`;
@@ -1110,7 +1198,7 @@ function renderStmtModal() {
           ${catOpts}
         </select>
       </td>
-      <td style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;padding:.4rem .6rem">${escHtml(row.bank || '—')}</td>
+      <td style="font-size:.78rem;color:var(--text-muted);white-space:nowrap;padding:.4rem .6rem">${escHtml(row.bank || '—')}${row.duplicate ? '<br><span class="dup-chip" title="This transaction already exists in your expenses">Already imported</span>' : ''}</td>
       <td>
         <button class="btn btn-del" onclick="removeStmtRow(${row._id})"
           style="padding:.18rem .4rem;font-size:.68rem;line-height:1.4">&#x2715;</button>
@@ -1179,6 +1267,9 @@ async function saveStatementRows() {
 
   const bank = toSave[0]?.bank || '';
 
+  if (savingStatement) return;            // a double-click would otherwise save it twice
+  savingStatement = true;
+  document.getElementById('stmt-save-btn').disabled = true;
   setSpinner(true);
   try {
     const res  = await fetch('/api/save-statement', {
@@ -1207,6 +1298,9 @@ async function saveStatementRows() {
     await Promise.all([loadSummary(), loadExpenses(), loadStatements()]);
     switchTab('statements');
   } finally {
+    savingStatement = false;
+    const btn = document.getElementById('stmt-save-btn');
+    if (btn) btn.disabled = !stmtRows.some(r => r.included);
     setSpinner(false);
   }
 }

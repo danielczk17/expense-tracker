@@ -261,6 +261,26 @@ header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .01em; }
 #drill-body thead th { position: sticky; top: 0; z-index: 1; background: var(--bg-subtle); }
 #drill-body .drill-total { position: sticky; bottom: 0; background: var(--bg-card); }
 
+/* Dashboard grid: two cards per row; cards in a row share a height and the charts stretch to fill it */
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem 1rem;
+  margin-bottom: 1.25rem;
+}
+.dash-grid > .card { display: flex; flex-direction: column; margin-bottom: 0; }
+.chart-fill { flex: 1; display: flex; flex-direction: column; }
+.chart-wrap { position: relative; flex: 1; }
+.chart-wrap canvas { position: absolute; left: 0; top: 0; width: 100%; display: block; }
+/* Row order: cards 1-2, then the drill-down panel, then cards 3-4. Merchant drill-downs
+   (opened from row 2) move the panel below row 2 instead, so it never appears above the click. */
+.dash-grid > #drill-card { grid-column: 1 / -1; order: 1; }
+.dash-grid > .row2 { order: 2; }
+.dash-grid > #drill-card.after-row2 { order: 3; }
+@media (max-width: 800px) {
+  .dash-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* Category Trend controls */
 .ct-select {
   padding: .3rem .55rem;
@@ -494,6 +514,19 @@ body.dark #stmt-info-banner {
 .stmt-table td.chk { text-align: center; }
 .stmt-table tbody tr:hover { background: var(--bg-subtle); }
 .stmt-row.stmt-excl { opacity: .4; }
+.dup-chip {
+  display: inline-block; margin-top: .15rem;
+  font-size: .62rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: .05rem .35rem; border-radius: 4px;
+  background: #fef3c7; color: #b45309; border: 1px solid #fde68a;
+}
+body.dark .dup-chip { background: #422006; color: #fbbf24; border-color: #713f12; }
+.dup-stmt {
+  padding: .5rem .7rem; border: 1px solid var(--border); border-radius: 6px;
+  font-size: .78rem; color: var(--text); background: var(--bg-subtle);
+}
+.dup-stmt + .dup-stmt { margin-top: .4rem; }
+.dup-stmt span { color: var(--text-muted); }
 .stmt-input {
   border: 1px solid var(--border);
   border-radius: 4px;

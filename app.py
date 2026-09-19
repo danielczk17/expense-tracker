@@ -841,20 +841,27 @@ def api_summary():
             (f"{month}%",),
         ).fetchone()
 
-        ytd_total = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE date LIKE ?",
-            (f"{month[:4]}%",),
-        ).fetchone()
+        # Baseline for "biggest mover": each category's average over up to 3 earlier months
+        # that have data (same window as the Average Month tile).
+        prior_months = [r["m"] for r in conn.execute(
+            """SELECT DISTINCT substr(date,1,7) AS m FROM expenses
+               WHERE substr(date,1,7) < ? ORDER BY m DESC LIMIT 3""", (month,)
+        ).fetchall()]
+        category_avg = []
+        if prior_months:
+            marks = ",".join("?" * len(prior_months))
+            category_avg = [
+                {"category": r["category"], "avg": r["total"] / len(prior_months)}
+                for r in conn.execute(
+                    f"""SELECT category, SUM(amount) AS total FROM expenses
+                        WHERE substr(date,1,7) IN ({marks}) GROUP BY category""", prior_months
+                ).fetchall()
+            ]
 
-        # Previous month (safe arithmetic on YYYY-MM string)
-        y, m = int(month[:4]), int(month[5:7])
-        if m == 1:
-            prev_month = f"{y-1}-12"
-        else:
-            prev_month = f"{y}-{m-1:02d}"
-        prev_total = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM expenses WHERE date LIKE ?",
-            (f"{prev_month}%",),
+        largest_expense = conn.execute(
+            """SELECT date, description, category, amount FROM expenses
+               WHERE date LIKE ? ORDER BY amount DESC, date DESC LIMIT 1""",
+            (f"{month}%",),
         ).fetchone()
 
         by_bank = conn.execute(
@@ -877,8 +884,9 @@ def api_summary():
     return jsonify({
         "month":          month,
         "total":          month_total["total"],
-        "prev_total":     prev_total["total"],
-        "ytd_total":      ytd_total["total"],
+        "category_avg":     category_avg,
+        "avg_months":       len(prior_months),
+        "largest_expense":  dict(largest_expense) if largest_expense else None,
         "total_budget":   total_budget,
         "by_category":      by_cat_list,
         "by_bank":          [dict(r) for r in by_bank],
@@ -1039,6 +1047,60 @@ def api_delete_merchant_rule(pattern):
 # Statement parsing
 # ---------------------------------------------------------------------------
 
+def _flag_duplicates(txns: list) -> dict:
+    """Mark parsed transactions that already exist in the expenses table (txn["duplicate"]).
+
+    Matching is one-to-one, so two identical charges on a day only match two saved
+    rows. First try date + amount + description; fall back to date + description so a
+    row whose amount was edited during the first import is still recognised.
+    Returns a summary of what matched and which saved statements it came from."""
+    for t in txns:
+        t["duplicate"] = False
+    summary = {"count": 0, "total": len(txns), "statements": [], "manual": 0}
+    if not txns:
+        return summary
+
+    norm = lambda d: re.sub(r"\s+", " ", (d or "").strip().lower())
+    dates = [t["date"] for t in txns]
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT date, amount, description, statement_id FROM expenses WHERE date BETWEEN ? AND ?",
+            (min(dates), max(dates)),
+        ).fetchall()
+
+        exact, loose = {}, {}
+        for r in rows:
+            entry = {"sid": r["statement_id"] or "", "used": False}
+            exact.setdefault((r["date"], round(r["amount"], 2), norm(r["description"])), []).append(entry)
+            loose.setdefault((r["date"], norm(r["description"])), []).append(entry)
+
+        # Two passes so a loose (edited-amount) match can never steal a saved row that
+        # another uploaded transaction matches exactly.
+        sids = []
+        def claim(t, pool):
+            match = next((e for e in pool if not e["used"]), None)
+            if match:
+                match["used"] = True
+                t["duplicate"] = True
+                sids.append(match["sid"])
+
+        for t in txns:
+            claim(t, exact.get((t["date"], round(t["amount"], 2), norm(t["description"])), []))
+        for t in txns:
+            if not t["duplicate"]:
+                claim(t, loose.get((t["date"], norm(t["description"])), []))
+
+        summary["count"]  = len(sids)
+        summary["manual"] = sum(1 for x in sids if not x)   # matched hand-entered / CSV rows
+        found = sorted({x for x in sids if x})
+        if found:
+            marks = ",".join("?" * len(found))
+            summary["statements"] = [dict(r) for r in conn.execute(
+                f"SELECT * FROM statements WHERE id IN ({marks}) ORDER BY uploaded_at DESC", found
+            ).fetchall()]
+    return summary
+
+
 @app.route("/api/parse-statement", methods=["POST"])
 def api_parse_statement():
     if "file" not in request.files:
@@ -1050,7 +1112,8 @@ def api_parse_statement():
         pdf_bytes = f.read()
         txns, raw_lines = parse_pdf_statement(pdf_bytes)
         txns = _apply_merchant_rules(txns)
-        resp = {"transactions": txns, "raw_sample": raw_lines[:80]}
+        duplicates = _flag_duplicates(txns)
+        resp = {"transactions": txns, "duplicates": duplicates, "raw_sample": raw_lines[:80]}
         return jsonify(resp)
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 422

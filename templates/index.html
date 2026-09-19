@@ -45,23 +45,24 @@
       <div class="val" id="s-total">—</div>
     </div>
     <div class="summary-card">
+      <div class="lbl">Average Month</div>
+      <div class="val" id="s-avg" title="Average spend of the (up to 3) months before this one that have data">—</div>
+      <div class="sub" id="s-avg-sub">—</div>
+    </div>
+    <div class="summary-card">
       <div class="lbl">Budget Used</div>
       <div class="val neutral" id="s-budget-used">—</div>
       <div class="sub" id="s-budget-sub">—</div>
     </div>
     <div class="summary-card">
-      <div class="lbl">vs Last Month</div>
-      <div class="val" id="s-vs-last">—</div>
-      <div class="sub" id="s-vs-last-sub">—</div>
+      <div class="lbl">Biggest Mover</div>
+      <div class="val" id="s-mover" style="font-size:1.1rem" title="The category that changed most compared with its average over the earlier months">—</div>
+      <div class="sub" id="s-mover-sub">—</div>
     </div>
     <div class="summary-card">
-      <div class="lbl">Top Category</div>
-      <div class="val" id="s-top-cat" style="font-size:1.1rem">—</div>
-      <div class="sub" id="s-top-cat-amt">—</div>
-    </div>
-    <div class="summary-card">
-      <div class="lbl">YTD Total</div>
-      <div class="val" id="s-ytd">—</div>
+      <div class="lbl">Largest Expense</div>
+      <div class="val" id="s-largest">—</div>
+      <div class="sub" id="s-largest-sub">—</div>
     </div>
   </div>
 
@@ -74,9 +75,9 @@
   <!-- ── Dashboard tab ── -->
   <div id="tab-dashboard">
 
-    <div style="display:flex;gap:1rem;align-items:flex-start">
+    <div class="dash-grid">
 
-    <div class="card" style="flex:1;min-width:0">
+    <div class="card">
       <div class="card-header">
         <span class="card-title">Spending Overview</span>
         <span id="cat-chart-month" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
@@ -123,9 +124,6 @@
       </div>
     </div>
 
-    <!-- Right column: Category Trend + Top Merchants -->
-    <div style="flex:1;min-width:0">
-
     <!-- Category trend: one category's spending over the past few months -->
     <div class="card" id="cat-trend-card">
       <div class="card-header">
@@ -140,14 +138,14 @@
         </div>
       </div>
       <div id="cat-trend-empty" class="empty" style="display:none">No spending in this category.</div>
-      <div id="cat-trend-area" style="padding:1rem 1.25rem 1.25rem">
+      <div id="cat-trend-area" class="chart-fill" style="padding:1rem 1.25rem 1.25rem">
         <div id="ct-summary" style="font-size:.75rem;color:var(--text-muted);margin-bottom:.5rem"></div>
-        <canvas id="cat-trend-canvas" style="display:block;width:100%"></canvas>
+        <div class="chart-wrap" style="min-height:190px"><canvas id="cat-trend-canvas"></canvas></div>
       </div>
     </div>
 
     <!-- Top merchants: expenses summed per merchant, largest first -->
-    <div class="card" id="merchants-card">
+    <div class="card row2" id="merchants-card">
       <div class="card-header">
         <span class="card-title">Top Merchants</span>
         <span id="merchants-meta" style="font-size:.78rem;color:var(--text-muted);margin-left:auto"></span>
@@ -156,11 +154,18 @@
       <div id="merchants-list" style="display:none"></div>
     </div>
 
-    </div><!-- end right column -->
+    <!-- Monthly totals across all months -->
+    <div class="card row2">
+      <div class="card-header">
+        <span class="card-title">Monthly Trend</span>
+      </div>
+      <div id="trend-empty" class="empty">No expense history yet — add your first expense to get started.</div>
+      <div id="trend-chart-area" class="chart-fill" style="display:none;padding:1rem 1.25rem 1.25rem">
+        <div class="chart-wrap" style="min-height:200px"><canvas id="trend-canvas"></canvas></div>
+      </div>
+    </div>
 
-    </div><!-- end side-by-side row -->
-
-    <!-- Drill-down: expenses behind the category or mode clicked above -->
+    <!-- Drill-down: sits right under the row of cards that was clicked (see .dash-grid ordering in CSS) -->
     <div class="card" id="drill-card" style="display:none">
       <div class="card-header">
         <span class="card-title" id="drill-title">Details</span>
@@ -170,15 +175,7 @@
       <div class="table-wrap" id="drill-body"></div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Monthly Trend</span>
-      </div>
-      <div id="trend-empty" class="empty">No expense history yet — add your first expense to get started.</div>
-      <div id="trend-chart-area" style="display:none;padding:1rem 1.25rem 1.25rem">
-        <canvas id="trend-canvas" style="width:100%;height:200px;display:block"></canvas>
-      </div>
-    </div>
+    </div><!-- end dash-grid -->
 
   </div><!-- end #tab-dashboard -->
 
@@ -384,6 +381,21 @@
       <button class="btn btn-ghost" onclick="resolveConfirm(false)">Cancel</button>
       <button class="btn" onclick="resolveConfirm(true)" style="background:#ef4444;border:1px solid #ef4444;color:#fff">Confirm</button>
     </div>
+  </div>
+</div>
+
+<!-- ── Duplicate statement warning ── -->
+<div id="dup-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:210;align-items:center;justify-content:center;padding:1rem" onclick="if(event.target===this)resolveDuplicate('cancel')">
+  <div role="alertdialog" aria-labelledby="dup-title" style="background:var(--bg-card);border-radius:.75rem;padding:1.5rem 1.75rem;max-width:480px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+    <div style="display:flex;gap:.75rem;align-items:flex-start">
+      <div style="font-size:1.5rem;line-height:1;color:#f59e0b">&#9888;</div>
+      <div style="min-width:0">
+        <div id="dup-title" style="font-size:1rem;font-weight:700;color:var(--text)"></div>
+        <p id="dup-msg" style="margin:.4rem 0 0;font-size:.86rem;color:var(--text-muted);line-height:1.5"></p>
+      </div>
+    </div>
+    <div id="dup-list" style="margin-top:.9rem"></div>
+    <div id="dup-actions" style="display:flex;gap:.6rem;justify-content:flex-end;flex-wrap:wrap;margin-top:1.25rem"></div>
   </div>
 </div>
 
